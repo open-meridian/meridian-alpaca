@@ -19,10 +19,10 @@ concurrency:
 
 env:
   # The meridian whose rules the plugin is held to: the rules are compiled
-  # into it. 0.1.15 is the first with `plugin check`. Move it deliberately, as
+  # into it. Move it deliberately, as
   # the SDK's pin is moved, since a newer one may hold a rule this plugin does
   # not keep yet.
-  MERIDIAN_VERSION: 0.1.15
+  MERIDIAN_VERSION: 0.1.33
 
 jobs:
   check:

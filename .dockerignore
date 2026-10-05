@@ -13,3 +13,6 @@ CLAUDE.local.md
 # the image.
 tests
 .github
+# Real recordings, and what the gates leave behind: never in the image.
+recordings
+.test.log

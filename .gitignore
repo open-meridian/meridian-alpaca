@@ -17,3 +17,10 @@ dist/
 CLAUDE.local.md
 .claude/settings.local.json
 .meridian/
+
+# Real recordings of Alpaca's responses, which `make live` and `make
+# sample` write: never committed (the venue's terms; the plan's Q11).
+recordings/
+
+# What `make test` leaves behind.
+.test.log

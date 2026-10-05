@@ -5,12 +5,24 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "alpaca"
 version = "0.1.0"
-description = "A Meridian plugin"
+description = "Alpaca's US equity and ETF market data for an Open Meridian deployment: a dgm connectivity spike"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 # The SDK and nothing else of Meridian's, pinned exactly: the sidecar this runs
 # beside speaks one version of the contract, and a range would let a rebuild
-# pick up another.
+# pick up another. The Dockerfile's base is the same version.
+#
+# No third-party dependency: Alpaca's REST is the standard library's, and the
+# New York day is zoneinfo's, on the system's time zone data.
 dependencies = ["open-meridian==0.18.0"]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "mypy>=1.11",
+  "ruff>=0.6",
+]
 
 [project.scripts]
 alpaca = "alpaca.__main__:main"
@@ -27,8 +39,48 @@ alpaca = ["templates/*.html"]
 [tool.meridian]
 # Roles from the deployment's fixed list -- ccm, compliance, custody, dgm, ems,
 # match, oms, operations, portfolio, reporting, servicing, settlement, signal
-# -- and its grants are theirs. None, as here, is a plugin admitted with no
-# topics.
-roles = []
+# -- and its grants are theirs. `dgm` alone (the lake plan's Q3: Alpaca is a
+# broker, and its `custody` and `ccm` arrive later in this repository): it
+# would put Alpaca's market data into the lake, its codes converted at the
+# edge, and keep Alpaca's raw responses in its own storage. The contract
+# gives a dgm no lake to record into yet.
+roles = ["dgm"]
 # Whether it serves a page through its sidecar.
 interface = true
+# Its declaration: its two secret settings' names, and the storage it asks
+# for its raw responses.
+declaration = "alpaca.declaration:DECLARATION"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["alpaca"]
+known-local-folder = ["conftest", "keys"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+# The SDK's gRPC stubs have no types (meridian-python's own configuration
+# says the same).
+[[tool.mypy.overrides]]
+module = [
+    "meridian.v1.sidecar_pb2_grpc",
+    "meridian.v1.envelope_pb2_grpc",
+    "meridian.plugin.v1.operations_pb2_grpc",
+]
+follow_imports = "skip"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# The live smoke test calls Alpaca's real endpoints with the product owner's
+# keys from the environment; `make live` runs it (pytest --live), CI never
+# does.
+markers = ["live: calls Alpaca's real endpoints with keys from the environment (make live)"]
