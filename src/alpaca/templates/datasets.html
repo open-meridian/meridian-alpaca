@@ -1,0 +1,28 @@
+{#- Datasets, at admin: what the plugin serves the lake, its default terms,
+    what the key is entitled to, and what it recorded; the standing wants it
+    keeps current. No prices: those are the reading roles'. -#}
+{% extends "meridian/base.html" %}
+{% block content %}
+<p class="muted">Daily: closes and daily bars, New York's day to the 16:00 close. Live: last, bid and ask. Licensed and entitled on the deployment's Data sources page; the terms shown are Alpaca's defaults, the account holder's personal use.</p>
+<section class="panel">
+<om-grid id="datasets" row-key="id" dense one-line narrow="priority" caption="Datasets">
+<script type="application/json">{{ grid|tojson }}</script>
+<div class="table-wrap"><table class="one-line"><caption>Datasets</caption>
+<thead><tr><th>Dataset</th><th>Feed</th><th>Arrives</th><th>Default terms</th><th>Entitled</th><th class="num">Recorded</th><th class="num">Restated</th><th class="num">Declined</th><th class="num">Unconverted</th><th>Last recorded</th></tr></thead>
+<tbody>{% for row in grid_rows %}<tr><td>{{ row.dataset }}</td><td>{{ row.feed }}</td><td>{{ row.modes }}</td><td>{{ row.terms }}</td><td><span class="badge {{ row.entitled_tone }}">{{ row.entitled }}</span></td><td class="num">{{ row.recorded }}</td><td class="num">{{ row.restated }}</td><td class="num">{{ row.declined }}</td><td class="num">{{ row.unconverted }}</td><td>{{ row.last }}</td></tr>{% endfor %}</tbody>
+</table></div>
+</om-grid>
+</section>
+<section class="panel">
+<div class="panel-body"><h2>Kept current</h2>
+<p class="muted">{{ data.listings }} listings known; {{ data.forming }} days still forming, read again until final.{% if not data.reads_instruments %} An instrument another source named is declined: this deployment does not let a dgm read an instrument's record.{% endif %}</p></div>
+<om-grid id="standing" row-key="id" dense one-line narrow="priority" caption="Standing wants" empty="No standing wants: nothing is kept current.">
+<script type="application/json">{{ standing_grid|tojson }}</script>
+<div class="table-wrap"><table class="one-line"><caption>Standing wants</caption>
+<thead><tr><th>Listings</th><th>Prices</th><th class="num">Subjects</th><th>Last kept</th></tr></thead>
+<tbody>{% for row in standing_rows %}<tr><td>{{ row.symbols }}</td><td>{{ row.kinds }}</td><td class="num">{{ row.subjects }}</td><td>{{ row.kept }}</td></tr>{% else %}<tr><td colspan="4" class="faint">No standing wants: nothing is kept current.</td></tr>{% endfor %}</tbody>
+</table></div>
+</om-grid>
+{% if more %}<p class="hint">And {{ more }} more standing wants.</p>{% endif %}
+</section>
+{% endblock %}

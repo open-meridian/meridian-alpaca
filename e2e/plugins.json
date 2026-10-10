@@ -1,0 +1,4 @@
+[
+  {"instance": "alpaca", "image": "alpaca:local", "roles": ["dgm"]},
+  {"instance": "reader", "image": "alpaca:local", "roles": ["custody", "reporting"]}
+]

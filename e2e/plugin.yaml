@@ -1,0 +1,8 @@
+# The e2e's reader (e2e/reader.py), run from the plugin's own image with this
+# directory mounted: the harness's plugins.yaml makes its service, and this
+# gives it its command. Paths are absolute (the harness's README).
+services:
+  reader:
+    entrypoint: ["python", "-u", "/e2e/reader.py"]
+    volumes:
+      - ${ALPACA_E2E:?set ALPACA_E2E to this repository's e2e directory, absolute}:/e2e:ro

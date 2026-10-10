@@ -1,0 +1,15 @@
+{# The pieces both pages are built from: the kit's classes and components. #}
+
+{# The head's status (om-status, data-om-header): framed, the dashboard
+   draws it beside the plugin's name. Its words show without the kit. #}
+{% macro status_dot(dot) -%}
+<om-status data-om-header state="{{ dot.state }}" label="{{ dot.label }}">{{ dot.text }}</om-status>
+{%- endmacro %}
+
+{# What and its value, one line a row, the note beside the value. #}
+{% macro facts(caption, rows) -%}
+<div class="table-wrap"><table class="dense one-line" aria-label="{{ caption }}">
+<colgroup><col style="width: 34%"><col></colgroup>
+<tbody>{% for row in rows %}<tr><th scope="row">{{ row.what }}</th><td>{{ row.value }}{% if row.note %} <span class="hint">{{ row.note }}</span>{% endif %}</td></tr>{% endfor %}</tbody>
+</table></div>
+{%- endmacro %}

@@ -16,3 +16,7 @@ tests
 # Real recordings, and what the gates leave behind: never in the image.
 recordings
 .test.log
+e2e
+.e2e
+preview
+docs

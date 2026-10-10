@@ -5,133 +5,169 @@ SHELL := /bin/bash
 unexport GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
          GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 
-.PHONY: help ci-local ci-remote lint test check image conformance-same live sample fmt
+.PHONY: help ci-local ci-local-deep ci-remote test lint check image e2e e2e-recorded live preview fmt install-hooks
 
 PKG         := alpaca
-# The retail pair's other half, whose suite is to be this one, byte for byte.
-SIBLING     := ../meridian-tradier
-SIBLING_PKG := tradier
-# The seam is every spike's: rows.py byte for byte meridian-coinbase's.
-SEAM        := ../meridian-coinbase/src/coinbase/rows.py
 DOCKER      := DOCKER_BUILDKIT=1 docker
 PY_VERSION  := 3.12
 CHECK       := meridian-$(PKG)-check
-PLUGIN_CHECK := meridian-$(PKG)-plugin-check
 IMAGE       ?= $(PKG):local
-BASE        ?= ghcr.io/open-meridian/plugin-python:0.18.0
-SYMBOL      ?= SPY
-FEED        ?= iex
-# The key, passed into the container by name alone, so no value is ever on a
-# command line; never in CI.
-KEY_ENV     := -e APCA_API_KEY_ID -e APCA_API_SECRET_KEY
+# The SDK pyproject.toml pins, and its base image. Where the sibling
+# meridian-python checkout carries exactly that version -- one not yet
+# published, being tried -- it is built from there (SDK_REPO): the tests' and
+# the check's containers install it from source, and the plugin's image is
+# built on a base made from it. Otherwise both come from PyPI and ghcr.io.
+SDK_VERSION := $(shell sed -n 's/.*"open-meridian==\([0-9][0-9.]*\)".*/\1/p' pyproject.toml)
+SDK_REPO    ?= $(if $(shell grep -s '^version = "$(SDK_VERSION)"$$' ../meridian-python/pyproject.toml),../meridian-python,)
+SDK_CONTEXT := $(if $(SDK_REPO),--build-context sdk=$(SDK_REPO),)
+BASE        ?= $(if $(SDK_REPO),plugin-python:$(SDK_VERSION)-local,ghcr.io/open-meridian/plugin-python:$(SDK_VERSION))
+PLUGIN_CHECK := meridian-$(PKG)-plugin-check
 # The meridian check.yaml holds the plugin to, read from there so the two
 # cannot drift.
 MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\1/p' .github/workflows/check.yaml)
 
-help:
-	@echo "  make ci-local          every gate: lint, tests, plugin check, the image, the suite unchanged"
-	@echo "  make ci-remote         what CI would run: lint and tests"
-	@echo "  make test              the tests on the synthetic exchanges, in a container"
-	@echo "  make lint              ruff and mypy, strict"
-	@echo "  make check             meridian plugin check --run-tests, in a container"
-	@echo "  make image             build the plugin's image, as upload would, and check it"
-	@echo "  make conformance-same  rows.py identical to the crypto spikes', the suite to $(SIBLING)'s"
-	@echo "  make live              the live smoke test on Alpaca, with the environment's key (never in CI)"
-	@echo "  make sample            print converted rows for SYMBOL=$(SYMBOL) FEED=$(FEED), with the environment's key"
-	@echo "  make fmt               apply the formatter"
+# The released runtime `make e2e` proves the plugin against, by tag and
+# digest, and core's plugin harness published with it, by the same commit's
+# tag and its digest: core b1b8420, the lake built (contract v18). Moved
+# together by a deliberate commit, and with the SDK when a contract version
+# changes. e2e-latest.yaml tries the runtime and harness tagged latest weekly.
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:b1b8420@sha256:422a28cec7ba6b3856ac43b9871cea9fbc74f69ea86ce5737ee49f4c29dcc77a
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:b1b8420@sha256:e03b0f06c273504ca8c2e893c8279b6ac3d91ee9b67ead9de28b35c760e731c3
+# A developer's own recording of Alpaca's responses, for `make e2e-recorded`:
+# a directory holding exchange.json, never committed.
+RECORDED    ?=
+E2E_RECORDED ?=
 
-# Local green is the completion signal.
-ci-local: ci-remote check image conformance-same
+help:
+	@echo "  make ci-local       every gate: lint, tests, plugin check, the plugin's image, and e2e (the pre-push gate)"
+	@echo "  make ci-remote      what ci.yaml runs: lint and tests"
+	@echo "  make test           the tests on the synthetic exchange, the dgm suite among them, in a container"
+	@echo "  make lint           ruff and mypy, strict"
+	@echo "  make check          what check.yaml runs: meridian plugin check --verified --run-tests, in a container"
+	@echo "  make image          build the plugin's image, as upload would, and check it"
+	@echo "  make e2e            the plugin, synthetic, on the plugin harness of the runtime it pins (e2e/run.py)"
+	@echo "  make e2e-recorded   the same on RECORDED, a developer's own recording, never committed"
+	@echo "  make live           the account holder's live check: asks for the key, unseen (never in CI)"
+	@echo "  make preview        write preview/: each page on synthetic data, linking the kit"
+	@echo "  make fmt            apply the formatter"
+	@echo "  make install-hooks  point git at hooks/ so push fires ci-local"
+
+# Local green is the completion signal; CI is confirmation. Every CI job is a
+# target reachable from here.
+ci-local: ci-remote check image e2e
 	@echo
 	@echo "ci-local: GREEN"
+
+ci-local-deep: ci-local
 
 ci-remote: lint test
 	@echo
 	@echo "ci-remote: GREEN"
 
 lint:
-	@$(DOCKER) build -f Dockerfile.check --target lint . >/dev/null 2>&1 \
+	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target lint . >/dev/null 2>&1 \
 		|| { echo "lint FAILED; see it with:" >&2; \
-		     echo "  DOCKER_BUILDKIT=1 docker build -f Dockerfile.check --target lint --progress=plain ." >&2; exit 1; }
+		     echo "  DOCKER_BUILDKIT=1 docker build $(SDK_CONTEXT) -f Dockerfile.check --target lint --progress=plain ." >&2; exit 1; }
 	@echo "lint OK: ruff and mypy (strict) clean"
 
 test:
-	@$(DOCKER) build -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1 \
+	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1 \
 		|| { echo "test FAILED to build; see it with:" >&2; \
-		     echo "  DOCKER_BUILDKIT=1 docker build -f Dockerfile.check --target test --progress=plain ." >&2; exit 1; }
+		     echo "  DOCKER_BUILDKIT=1 docker build $(SDK_CONTEXT) -f Dockerfile.check --target test --progress=plain ." >&2; exit 1; }
 	@docker run --rm --network none $(CHECK) python -m pytest -q -rs >.test.log 2>&1 \
 		|| { echo "test FAILED. The last 40 lines, and the whole of it in .test.log:" >&2; \
 		     tail -40 .test.log >&2; exit 1; }
 	@echo "test OK, with no network: $$(tail -1 .test.log)"
 
-# check.yaml's job, in a container: the meridian it pins holds the plugin to
-# the framework's rules and runs its tests. The repository is mounted
-# read-only, and the check writes nothing to it.
+# check.yaml's job, in a container: the meridian it pins, installed as it is
+# there, holds the plugin to the framework's rules and runs its tests. The
+# repository is mounted read-only, and the check writes nothing to it.
 check:
 	@[ -n "$(MERIDIAN_VERSION)" ] \
 		|| { echo "check FAILED: .github/workflows/check.yaml pins no MERIDIAN_VERSION" >&2; exit 1; }
-	@$(DOCKER) build -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) \
+	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) \
 		-t $(PLUGIN_CHECK) . >/dev/null 2>&1 \
 		|| { echo "check FAILED to build; see it with:" >&2; \
-		     echo "  DOCKER_BUILDKIT=1 docker build -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) --progress=plain ." >&2; exit 1; }
+		     echo "  DOCKER_BUILDKIT=1 docker build $(SDK_CONTEXT) -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) --progress=plain ." >&2; exit 1; }
 	@out="$$(docker run --rm --network none -v "$(CURDIR)":/w:ro -e PYTHONDONTWRITEBYTECODE=1 \
-		-e PYTEST_ADDOPTS="-p no:cacheprovider" $(PLUGIN_CHECK) meridian plugin check --run-tests 2>&1)" \
+		-e PYTEST_ADDOPTS="-p no:cacheprovider" $(PLUGIN_CHECK) meridian plugin check --verified --run-tests 2>&1)" \
 		|| { echo "check FAILED:" >&2; echo "$$out" >&2; exit 1; }
-	@echo "check OK: meridian $(MERIDIAN_VERSION) plugin check --run-tests, every rule holds"
+	@echo "check OK: meridian $(MERIDIAN_VERSION) plugin check --verified --run-tests, every rule holds"
 
-# The image `meridian plugin upload` builds from this Dockerfile: it starts as
-# 65532, imports itself, finds New York's time zone (the exchange day), and
-# holds nothing of this repository but the installed package.
+# The image `meridian plugin upload` builds from this Dockerfile, checked for
+# what a plugin's image must be: it starts as 65532, imports itself, carries
+# its synthetic exchange and its templates, and nothing of this repository
+# but the installed package.
 image:
+	@if [ -n "$(SDK_REPO)" ]; then \
+		$(MAKE) --no-print-directory -C "$(SDK_REPO)" base-image BASE_IMAGE=$(BASE) >/dev/null \
+			|| { echo "image FAILED: the base for open-meridian $(SDK_VERSION) was not built from $(SDK_REPO)" >&2; exit 1; }; \
+	fi
 	@$(DOCKER) build --build-arg BASE=$(BASE) -t $(IMAGE) . >/dev/null 2>&1 \
 		|| { echo "image FAILED; see it with:" >&2; \
 		     echo "  DOCKER_BUILDKIT=1 docker build --build-arg BASE=$(BASE) --progress=plain ." >&2; exit 1; }
 	@[ "$$(docker inspect -f '{{.Config.User}}' $(IMAGE))" = "65532" ] \
 		|| { echo "image FAILED: it does not run as 65532" >&2; exit 1; }
-	@docker run --rm --network none --entrypoint python $(IMAGE) -c \
-		"import meridian, zoneinfo, $(PKG).__main__, $(PKG).page, $(PKG).rows; zoneinfo.ZoneInfo('America/New_York')" \
-		|| { echo "image FAILED: it does not import the SDK and itself, or has no New York time zone" >&2; exit 1; }
-	@[ -z "$$(docker run --rm --network none --entrypoint sh $(IMAGE) -c 'ls -A /plugin')" ] \
+	@docker run --rm --entrypoint python $(IMAGE) -c \
+		"import meridian, alpaca.__main__, alpaca.page; from alpaca.synthetic import exchange; assert exchange()['bars']" \
+		|| { echo "image FAILED: it does not import the SDK and itself, with its synthetic exchange" >&2; exit 1; }
+	@[ -z "$$(docker run --rm --entrypoint sh $(IMAGE) -c 'ls -A /plugin')" ] \
 		|| { echo "image FAILED: /plugin holds files; only the installed package belongs" >&2; exit 1; }
 	@echo "image OK: $(IMAGE) on $(BASE), $$(docker image inspect -f '{{.Size}}' $(IMAGE) | awk '{printf "%.0f MB", $$1/1e6}')"
 
-# The seam is one module in every spike: rows.py byte for byte meridian-
-# coinbase's (and so meridian-kraken's). The retail pair's suite holds
-# unchanged only if it is the same suite: tests/test_conformance.py byte for
-# byte meridian-tradier's, once that is checked out beside this one.
-conformance-same:
-	@if [ ! -f "$(SEAM)" ]; then echo "conformance-same SKIPPED: no $(SEAM) beside this one"; exit 0; fi; \
-	diff -u src/$(PKG)/rows.py $(SEAM) >&2 \
-		|| { echo "conformance-same FAILED: rows.py differs from $(SEAM)" >&2; exit 1; }; \
-	if [ ! -d "$(SIBLING)" ]; then \
-		echo "conformance-same OK: rows.py is the crypto spikes', byte for byte; no $(SIBLING) to hold the suite to yet"; exit 0; fi; \
-	diff -u tests/test_conformance.py $(SIBLING)/tests/test_conformance.py >&2 \
-		|| { echo "conformance-same FAILED: tests/test_conformance.py differs from $(SIBLING)'s" >&2; exit 1; }; \
-	echo "conformance-same OK: the seam is every spike's and the suite $(SIBLING)'s, byte for byte"
+# The plugin, in synthetic mode and with no key, on the plugin harness
+# published with the runtime it pins (the harness's README, in
+# HARNESS_IMAGE), beside the e2e's reader: e2e/run.py says each step. Its own
+# project and no published port; nothing outlives it.
+e2e: image
+	@rm -rf .e2e && mkdir -p .e2e
+	@for image in $(RUNTIME_IMAGE) $(HARNESS_IMAGE); do \
+		case "$$image" in *@sha256:*) ;; *) docker pull -q "$$image" >/dev/null 2>&1 || true;; esac; \
+	done
+	@id="$$(docker create $(HARNESS_IMAGE) none 2>>.e2e/components.log)" \
+		&& docker cp "$$id:/harness" .e2e/harness >/dev/null \
+		&& docker rm "$$id" >/dev/null \
+		|| { echo "e2e FAILED: no plugin harness at /harness in $(HARNESS_IMAGE)" >&2; exit 1; }
+	@docker run --rm -i -v "$(CURDIR)/.e2e/harness":/harness:ro python:3.12-alpine \
+		python /harness/harness.py compose <e2e/plugins.json >.e2e/harness/plugins.yaml 2>>.e2e/components.log \
+		|| { echo "e2e FAILED: the harness did not write its plugins from e2e/plugins.json" >&2; exit 1; }
+	@MERIDIAN_RUNTIME_IMAGE=$(RUNTIME_IMAGE) ALPACA_E2E="$(CURDIR)/e2e" RECORDED="$(RECORDED)" \
+		python3 e2e/run.py $(if $(E2E_RECORDED),--recorded,); status=$$?; \
+		rm -rf .e2e/harness; exit $$status
 
-# Opt in, never in CI, never by an agent: Alpaca's real endpoints with the
-# developer's key, taken from the environment by name; converted and checked;
-# the real responses written under recordings/, which git ignores.
+e2e-recorded:
+	@[ -n "$(RECORDED)" ] && [ -f "$(RECORDED)/exchange.json" ] \
+		|| { echo "e2e-recorded FAILED: RECORDED names no directory holding exchange.json" >&2; exit 1; }
+	@$(MAKE) --no-print-directory e2e E2E_RECORDED=1 RECORDED="$(abspath $(RECORDED))"
+
+# The account holder's live check (src/alpaca/live.py), never CI's and never
+# an agent's: the key is typed at a prompt that does not echo and handed to
+# the container on its standard input, never as an argument, a variable or a
+# file. What Alpaca answers is kept under recordings/, which git ignores.
 live:
-	@[ -n "$$APCA_API_KEY_ID" ] && [ -n "$$APCA_API_SECRET_KEY" ] \
-		|| { echo "live needs APCA_API_KEY_ID and APCA_API_SECRET_KEY in the environment" >&2; exit 2; }
-	@$(DOCKER) build -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1 \
-		|| { echo "live FAILED to build" >&2; exit 1; }
+	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1 \
+		|| { echo "live FAILED to build; see it with:" >&2; \
+		     echo "  DOCKER_BUILDKIT=1 docker build $(SDK_CONTEXT) -f Dockerfile.check --target test --progress=plain ." >&2; exit 1; }
 	@mkdir -p recordings
-	@docker run --rm $(KEY_ENV) -v "$(CURDIR)/recordings":/w/recordings $(CHECK) \
-		python -m pytest -q -s --live -p no:cacheprovider tests/test_live.py
+	@read -r -s -p "Alpaca API key ID (not shown): " id; echo; \
+		read -r -s -p "Alpaca API secret key (not shown): " secret; echo; \
+		printf '%s\n%s\n' "$$id" "$$secret" | docker run --rm -i -v "$(CURDIR)/recordings":/recordings \
+			$(CHECK) python -m alpaca.live /recordings
 
-sample:
-	@[ -n "$$APCA_API_KEY_ID" ] && [ -n "$$APCA_API_SECRET_KEY" ] \
-		|| { echo "sample needs APCA_API_KEY_ID and APCA_API_SECRET_KEY in the environment" >&2; exit 2; }
-	@$(DOCKER) build -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1 \
-		|| { echo "sample FAILED to build" >&2; exit 1; }
-	@mkdir -p recordings
-	@docker run --rm $(KEY_ENV) -v "$(CURDIR)/recordings":/w/recordings $(CHECK) \
-		python tests/sample_live.py --symbol "$(SYMBOL)" --feed "$(FEED)" --raw-dir /w/recordings
+preview:
+	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
+	@mkdir -p preview
+	@for tab in connection datasets connection-no-key; do \
+		docker run --rm $(CHECK) python -m alpaca.preview $$tab >preview/$$tab.html || exit 1; \
+	done
+	@echo "preview: preview/connection.html, preview/datasets.html, preview/connection-no-key.html"
 
 # Applied in a container and written back, because the host has no toolchain.
 fmt:
 	@docker run --rm -v "$(CURDIR)":/w -w /w python:$(PY_VERSION)-slim \
 		sh -c 'pip install -q ruff >/dev/null 2>&1; python -m ruff check --fix src tests >/dev/null; python -m ruff format src tests'
 	@echo "fmt: applied"
+
+install-hooks:
+	@git config core.hooksPath hooks
+	@echo "hooks installed: git push now runs 'make ci-local' first"

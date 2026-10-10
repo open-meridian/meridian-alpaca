@@ -1,134 +1,98 @@
-"""The Connectivity page, against a stand-in for the sidecar.
-
-`meridian plugin check --run-tests` runs these. A `dgm` shows no market data,
-so its one page is at Manage alone: it is refused under Open and View, and
-shows whether Alpaca answers with the key -- each part set or not, never its
-value -- the feeds it is entitled to and the datasets it would serve, never
-a price.
-"""
+"""The pages, Connection and Datasets, under Manage alone, each the same answer
+as its read tool (`read_connection`, `read_datasets`): asked in-process with
+the SDK's PageClient as the sidecar would ask them."""
 
 from __future__ import annotations
 
 import asyncio
-import urllib.error
-import urllib.request
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
-import meridian
 import pytest
-from meridian.operations import Operations
+from meridian.suites import Recorder
 from meridian.testing import PageClient
 
-from alpaca import __main__ as plugin
-from alpaca.page import CONNECTIVITY, Connectivity, pages
-from alpaca.settings import config_from
+from alpaca.lake import LIVE_KINDS, Standing
+from alpaca.page import CONNECTION, DATASETS, State, pages, use
+from alpaca.settings import Config, Credentials
+from alpaca.vendor import Entitlements
 
-from conftest import KEY, client, kept_text
+from conftest import RECORDS, SPY, Clock, answer_records, at, synthetic_lake
 
-GIVEN = {"alpaca_api_key_id": KEY.key_id, "alpaca_api_secret_key": KEY.secret_key}
-
-
-class Sidecar(Operations):
-    """Who the plugin was launched as; it sends no operation from its page."""
-
-    identity = meridian.Identity("alpaca-1", roles=("dgm",))
-    grants = meridian.Grants()
-
-    async def _operate(self, method: Any, params: Any) -> Any:
-        raise AssertionError(f"the page sent {method}, which a dgm's page never sends")
+KEY = Credentials("PKTESTKEYID0000000002", "page-test-secret-0000000000000000000002")
 
 
-def page_client() -> PageClient:
-    return PageClient(pages, Sidecar())
-
-
-@pytest.fixture(autouse=True)
-def fresh() -> Iterator[None]:
-    yield
-    CONNECTIVITY.__dict__.update(Connectivity().__dict__)
-
-
-def test_the_page_is_served_under_manage_alone() -> None:
-    served = {(r.page.path, r.level): r.response.status for r in page_client().every_page()}
-    assert served == {("/", "admin"): 200, ("/", "write"): 403, ("/", "read"): 403}
-
-
-def test_it_shows_the_key_set_the_feeds_and_the_datasets_and_no_market_data(
-    tmp_path: Path,
-) -> None:
-    alpaca, _ = client(
-        tmp_path, refuse={"/v2/stocks/quotes/latest sip": [(403, "forbidden-sip.json")]}
+def synthetic_state(tmp: Path) -> State:
+    recorder = Recorder("alpaca-1")
+    answer_records(recorder, RECORDS)
+    lake = synthetic_lake(recorder, Clock(at("2026-10-10", 9)), tmp)
+    asyncio.run(lake.daily([SPY], *(__import__("datetime").date(2026, 10, 8),) * 2))
+    lake.standing["WNT-1"] = Standing("WNT-1", (SPY,), LIVE_KINDS, at("2026-10-10", 9))
+    assert lake.source is not None
+    return State(
+        config=Config(synthetic=True),
+        lake=lake,
+        source=lake.source,  # type: ignore[arg-type]
+        alpaca=lake.source.alpaca,  # type: ignore[attr-defined]
     )
-    plugin.probe(alpaca, config_from({**GIVEN, "feed": "sip"}))
-    page = page_client().get("/", "admin").text
-    assert "Alpaca answers with the key." in page and 'state="ok"' in page
-    assert "<dt>API key ID</dt><dd>set</dd>" in page
-    assert "<dt>API secret key</dt><dd>set</dd>" in page
-    # Never the key's value, anywhere it is shown or kept.
-    for secret in KEY.secrets():
-        assert secret not in page and secret not in kept_text(tmp_path)
-    assert "<td>SIP, real time</td><td>not entitled</td>" in page
-    assert "<td>SIP, past its latest 15 minutes</td><td>entitled</td>" in page
-    # The free account's SIP history serves the daily dataset; IEX the live one.
-    for key, served in (
-        ("daily-iex", "not served"),
-        ("daily-sip", "served"),
-        ("live-iex", "served"),
-        ("live-sip", "not served"),
-    ):
-        assert f"<td><code>{key}</code></td>" in page
-        row = page.split(f"<td><code>{key}</code></td>")[1].split("</tr>")[0]
-        assert f"<td>{served}</td>" in row, key
-    assert "America/New_York, ends 16:00" in page and "served, not kept" in page
-    # No price from any synthetic exchange reaches the page.
-    for price in ("62.79", "62.81", "62.795", "62.12"):
-        assert price not in page
 
 
-def test_without_a_key_it_says_which_part_is_missing_and_asks_nothing(tmp_path: Path) -> None:
-    alpaca, replay = client(tmp_path, credentials=None)
-    plugin.probe(alpaca, config_from({"alpaca_api_key_id": KEY.key_id}))
-    page = page_client().get("/", "admin").text
-    assert "Waiting for the API secret key." in page and 'state="warn"' in page
-    assert "<dt>API key ID</dt><dd>set</dd>" in page
-    assert "<dt>API secret key</dt><dd>not set</dd>" in page
-    assert KEY.key_id not in page and replay.asked == []
+@pytest.fixture
+def client(tmp_path: Path) -> PageClient:
+    use(synthetic_state(tmp_path))
+    return PageClient(pages)
 
 
-def test_a_refused_key_is_said_on_the_page(tmp_path: Path) -> None:
-    alpaca, _ = client(
-        tmp_path, refuse={"/v2/stocks/quotes/latest iex": [(401, "unauthorized.json")]}
-    )
-    plugin.probe(alpaca, config_from(GIVEN))
-    page = page_client().get("/", "admin").text
-    assert "Alpaca refused the key." in page and 'state="bad"' in page
-    assert "request is not authorized" in page
+def test_each_page_serves_manage_alone(client: PageClient) -> None:
+    for path in (CONNECTION, DATASETS):
+        assert client.get(path, "admin").status == 200
+        assert client.get(path, "write").status == 403
+        assert client.get(path, "read").status == 403
 
 
-def test_alpaca_not_answering_is_said_on_the_page(tmp_path: Path) -> None:
-    alpaca, _ = client(
-        tmp_path, refuse={"/v2/stocks/quotes/latest iex": [(503, "unauthorized.json")]}
-    )
-    plugin.probe(alpaca, config_from(GIVEN))
-    page = page_client().get("/", "admin").text
-    assert "Alpaca did not answer." in page and 'state="bad"' in page
+def test_the_connection_page_and_its_tool_read_one_source(client: PageClient) -> None:
+    page = client.get(CONNECTION, "admin").text
+    assert "Synthetic" in page and "Key and feeds" in page and "100 a minute" in page
+    answer = client.call_tool("read_connection")
+    assert answer.status == 200 and answer.outcome == "unchanged"
+    data = answer.data
+    assert data["mode"] == "synthetic" and data["daily_feed"] == "sip"
+    assert data["limit_per_minute"] == 100 and data["vendor_limit_per_minute"] == 200
+    assert data["sessions"] == []
 
 
-def _status(address: str) -> int:
-    try:
-        with urllib.request.urlopen(address, timeout=10) as answer:
-            return int(answer.status)
-    except urllib.error.HTTPError as answer:
-        return answer.code
+def test_the_datasets_page_and_its_tool_read_one_source(client: PageClient) -> None:
+    page = client.get(DATASETS, "admin").text
+    assert "alpaca-1:daily" in page and "alpaca-1:live" in page and "SPY" in page
+    data = client.call_tool("read_datasets").data
+    daily = next(d for d in data["datasets"] if d["key"] == "daily")
+    assert daily["recorded"] == 1 and daily["personal_use"] is True
+    assert daily["kept_by_default"] is True and daily["modes"] == ["pull", "push"]
+    live = next(d for d in data["datasets"] if d["key"] == "live")
+    assert live["kept_by_default"] is False and live["modes"] == ["pull", "stream"]
+    assert data["standing"][0]["symbols"] == ["SPY"] and data["listings"] == 1
 
 
-async def test_a_request_the_sidecar_did_not_forward_is_turned_away() -> None:
-    server = pages.serve(Sidecar(), 0)  # type: ignore[arg-type]
-    try:
-        address = f"http://127.0.0.1:{server.server_address[1]}/"
-        assert await asyncio.to_thread(_status, address) == 401
-    finally:
-        server.shutdown()
-        server.server_close()
+def test_no_key_value_and_no_price_is_ever_shown(tmp_path: Path) -> None:
+    state = synthetic_state(tmp_path)
+    state.config = Config(credentials=KEY, key_id_set=True, secret_key_set=True)
+    state.source._entitled = Entitlements(answered=True, iex=True, sip_history=True)  # type: ignore[union-attr]
+    use(state)
+    client = PageClient(pages)
+    for path in (CONNECTION, DATASETS):
+        text = client.get(path, "admin").text
+        assert KEY.key_id not in text and KEY.secret_key not in text
+        assert "573.78" not in text  # the close it recorded: a reader's to read
+    for tool in ("read_connection", "read_datasets"):
+        said = str(client.call_tool(tool).json)
+        assert KEY.key_id not in said and KEY.secret_key not in said and "573.78" not in said
+    assert client.call_tool("read_connection").data["key_id_set"] is True
+    client.assert_no_account_data("573.78")
+
+
+def test_with_no_key_the_page_says_where_to_enter_it(tmp_path: Path) -> None:
+    use(State(config=Config()))
+    client = PageClient(pages)
+    text = client.get(CONNECTION, "admin").text
+    assert "Enter the API key ID and secret key in Settings" in text
+    assert client.call_tool("read_connection").data["mode"] == "no key"
+    assert client.get(DATASETS, "admin").status == 200

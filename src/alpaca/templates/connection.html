@@ -1,0 +1,20 @@
+{#- Connection, at admin: whether Alpaca answers the key, which feeds it is
+    entitled to, and what this process has spent of Alpaca's limits. Never a
+    key's value, and no market data. One line a row, the note beside its
+    value and cut where the screen is narrow. -#}
+{% extends "meridian/base.html" %}
+{% import "_kit.html" as kit with context %}
+{% block status %}{{ kit.status_dot(dot) }}{% endblock %}
+{% block content %}
+<p class="muted">Closes and daily bars from {{ feeds.daily }}; live prices from {{ feeds.live }}. The key is entered in Settings, and never shown.</p>
+<div class="grid-2">
+<section class="panel">
+<div class="panel-body"><h2>Key and feeds</h2></div>
+{{ kit.facts("Key and feeds", key_rows) }}
+</section>
+<section class="panel">
+<div class="panel-body"><h2>Limits and use</h2></div>
+{{ kit.facts("Limits and use", use_rows) }}
+</section>
+</div>
+{% endblock %}

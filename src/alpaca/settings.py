@@ -1,23 +1,17 @@
-"""What the plugin needs from the deployment, declared as settings (W4.7).
+"""What the plugin needs from the deployment, declared as settings (W4.7, W6.11).
 
 Alpaca's Market Data API takes an account's key: its key ID and its secret
-key, which a free account (a paper one suffices) issues and which do not
-expire. Both are **secret settings**: an admin of the plugin gives them in
-the dashboard's settings form, and they are never read back, displayed,
-logged, reported or bundled. They reach this process in `meridian.Settings`
-and nowhere else. `Credentials` keeps them out of its repr; venue.py sends
-them as Alpaca's two headers and keeps neither in any raw record; the
-Connectivity page says whether each is set, never what it is.
+key, which a free account issues (a paper account's key suffices) and which
+do not expire. Both are **secret settings**: an admin of the plugin enters
+them in the dashboard's settings form, and they are never read back,
+displayed, logged, reported or kept. They reach this process in
+`meridian.Settings` and nowhere else. `Credentials` keeps them out of its
+repr; vendor.py sends them as Alpaca's two headers and keeps neither in any
+raw record; the Connection page says whether each is set, never what it is.
 
-The developer's commands (`make sample`, `make live`) take the same two
-values from the environment, as Alpaca's own tools name them
-(`APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`), read in tests/keys.py and
-handed in: nothing in this package reads the environment.
-
-`feed` says which of Alpaca's feeds to serve: IEX, the free one, by
-default; or SIP, every US exchange, used for a dataset only where the
-account is entitled to it (venue.Entitlements), IEX otherwise, and the page
-says which.
+`synthetic`, a developer's setting (shown only on a development deployment),
+serves the built-in synthetic exchange (synthetic.py) instead of calling
+Alpaca, with no key: what the e2e and a first look use.
 """
 
 from __future__ import annotations
@@ -29,11 +23,7 @@ import meridian
 
 KEY_ID = "alpaca_api_key_id"
 SECRET_KEY = "alpaca_api_secret_key"
-FEED = "feed"
-
-IEX = "iex"
-SIP = "sip"
-FEEDS = (IEX, SIP)
+SYNTHETIC = "synthetic"
 
 DECLARED: tuple[meridian.Setting, ...] = (
     meridian.Setting(
@@ -42,7 +32,10 @@ DECLARED: tuple[meridian.Setting, ...] = (
         required=True,
         secret=True,
         label="API key ID",
-        description="From Alpaca's dashboard, under API keys. A paper account's key suffices.",
+        description=(
+            "From Alpaca's dashboard, under API keys. A free account's key, or a paper "
+            "account's, suffices; it does not expire."
+        ),
     ),
     meridian.Setting(
         SECRET_KEY,
@@ -53,20 +46,15 @@ DECLARED: tuple[meridian.Setting, ...] = (
         description="Shown once, when Alpaca issues the key.",
     ),
     meridian.Setting(
-        FEED,
-        str,
-        label="Feed",
-        default=IEX,
-        choices=(
-            meridian.Choice(IEX, "IEX", "Free with every Alpaca account: one exchange, IEX."),
-            meridian.Choice(
-                SIP,
-                "SIP, where entitled",
-                "Every US exchange, consolidated. Used for each dataset only where the "
-                "account is entitled to it; IEX otherwise.",
-            ),
+        SYNTHETIC,
+        bool,
+        default=False,
+        developer=True,
+        label="Synthetic",
+        description=(
+            "Serve the built-in synthetic Alpaca responses instead of calling Alpaca, "
+            "with no key. For development and tests only."
         ),
-        description="Which of Alpaca's feeds the datasets are served from.",
     ),
 )
 
@@ -87,7 +75,7 @@ class Credentials:
         """Alpaca's authentication headers, for the request alone."""
         return {"APCA-API-KEY-ID": self.key_id, "APCA-API-SECRET-KEY": self.secret_key}
 
-    def secrets(self) -> tuple[str, str]:
+    def secrets(self) -> tuple[str, ...]:
         """The values never to be kept anywhere, for raw records to look for."""
         return (self.key_id, self.secret_key)
 
@@ -95,21 +83,25 @@ class Credentials:
 @dataclass(frozen=True)
 class Config:
     """The settings as the plugin uses them: the key, if both parts are
-    given, which parts are set (never their values), and the feed."""
+    given, which parts are set (never their values), and synthetic mode."""
 
-    credentials: Credentials | None
-    key_id_set: bool
-    secret_key_set: bool
-    feed: str = IEX
+    credentials: Credentials | None = None
+    key_id_set: bool = False
+    secret_key_set: bool = False
+    synthetic: bool = False
+
+    @property
+    def ready(self) -> bool:
+        """Whether there is something to ask: synthetic, or the whole key."""
+        return self.synthetic or self.credentials is not None
 
 
-def config_from(values: Mapping[str, str | int | bool]) -> Config:
-    """The settings as delivered, typed; an unknown feed is IEX's."""
+def config_from(values: Mapping[str, object]) -> Config:
+    """The settings as delivered, typed."""
     key_id, secret_key = str(values.get(KEY_ID) or ""), str(values.get(SECRET_KEY) or "")
-    feed = str(values.get(FEED) or IEX)
     return Config(
         credentials=Credentials(key_id, secret_key) if key_id and secret_key else None,
         key_id_set=bool(key_id),
         secret_key_set=bool(secret_key),
-        feed=feed if feed in FEEDS else IEX,
+        synthetic=values.get(SYNTHETIC) is True,
     )

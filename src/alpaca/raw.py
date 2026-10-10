@@ -6,15 +6,15 @@ its bytes arrived, with the request that asked for it (its URL, and its
 headers less Alpaca's two authentication headers, which are never kept) and
 the moment it was received. A row converted from it carries a
 `RawRecordRef` whose key is the record's key, then `#` and where in the
-record the row came from (`#1790913600`, a bar's time; `#52983525029461`, a
-trade's ID), so a person auditing a row follows it here and finds exactly
+record the row came from (`#SPY/0`, a symbol's first bar; `#SPY/bid`, a
+quote's side), so a person auditing a row follows it here and finds exactly
 what Alpaca said.
 
 Where the records live: `meridian.edge.storage_dir()` when the deployment
 grants the instance storage (a `dgm` is an edge role); a temporary directory
-in the tests; `recordings/`, git-ignored, for `make sample` and the live
-smoke test (real recordings stay local: the lake plan's Q11). No other
-plugin reads them.
+in the tests; `recordings/`, git-ignored, for `make live`, the account
+holder's live check (real recordings stay theirs: the lake plan's Q11). No
+other plugin reads them.
 """
 
 from __future__ import annotations
@@ -47,12 +47,21 @@ class RawStore:
         return self.root.joinpath(*parts).with_suffix(".json")
 
     def keep(self, key: str, record: dict[str, Any]) -> str:
-        """Keep one record under `key`; a key already kept is never overwritten."""
-        path = self._path(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("x", encoding="utf-8") as out:
-            json.dump(record, out, indent=1, sort_keys=True)
-        return key
+        """Keep one record under `key`, and say the key it was kept under: a key
+        already kept is never overwritten."""
+        taken, n = key, 0
+        while True:
+            path = self._path(taken)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with path.open("x", encoding="utf-8") as out:
+                    json.dump(record, out, indent=1, sort_keys=True)
+                return taken
+            except FileExistsError:
+                # Another process kept one under the same moment: never
+                # overwritten, the next free key instead.
+                n += 1
+                taken = f"{key}.{n}"
 
     def append(self, key: str, line: dict[str, Any]) -> int:
         """Add one message to a stream's record; its index in the record."""

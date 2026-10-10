@@ -1,5 +1,39 @@
 # alpaca
 
+Alpaca's US equity and ETF market data in an Open Meridian deployment's
+lake, as a `dgm` (contract v18). What is particular to this plugin first;
+the rest of this file is the SDK template's guidance, which holds for it
+as for every plugin.
+
+## This plugin
+
+- `src/alpaca/declaration.py`: the catalogue (`daily` and `live`), the
+  settings (the key's two secret parts; `synthetic`, a developer's) and the
+  storage. A dataset's key, modes, day and default terms change only with a
+  new version, and the deployment admin sees them before approving it.
+- `src/alpaca/vendor.py`: the only module that speaks to Alpaca. Every
+  response is kept as a raw record first (`raw.py`); the key goes in two
+  headers and nowhere else; at most 100 calls a minute.
+- `src/alpaca/convert.py`: Alpaca's values to what is recorded, Decimals from
+  their own text, never a float. `source.py` puts the client and the
+  conversion together for `lake.py`.
+- `src/alpaca/lake.py`: what the lake wants and what is recorded: wants
+  answered or declined per subject, standing wants kept current, forming
+  days restated under one row key, final closes pushed, subjects and venues
+  resolved (W3.1, W3.2, W3.14, W3.15).
+- `src/alpaca/page.py`: Connection and Datasets, under Manage, each a read
+  tool (`read_connection`, `read_datasets`). No page shows a price: prices
+  are the reading roles', under their entitlement.
+- `src/alpaca/synthetic.py` and `exchanges/exchange.json`: Alpaca's responses
+  with invented values, for synthetic mode, the tests and the e2e. Never
+  commit a real response: they are the account holder's, for personal use.
+- `tests/test_suite.py` runs the SDK's `dgm` suite unchanged. Keep it passing
+  after every change; `make ci-local` runs it, and the e2e on core's plugin
+  harness (`e2e/run.py`).
+- **Never handle a real key in a session.** The product owner enters it in
+  the deployment's Settings; the live check is theirs (README, "Checking it
+  live").
+
 A Meridian plugin, in Python on the open-meridian SDK. It runs beside a
 sidecar in a Meridian deployment and reaches nothing else: what it may publish
 and subscribe to comes from the roles `pyproject.toml` declares under
@@ -30,6 +64,39 @@ and subscribe to comes from the roles `pyproject.toml` declares under
   `PageClient.assert_no_account_data`, given that data, holds it to that in
   the tests. An account's identity (its name, custodian, type, owner, note)
   is not its data: a Manage page may list every account as a link target.
+- **Link, then record.** What a plugin records for an account it names by
+  the external account its connection reaches, and the sidecar takes it only
+  once that external account is linked to one of the deployment's accounts
+  (from contract v7; a statement naming none is refused). So the plugin
+  reports what it reaches (`plugin.report_external_accounts`, at start and
+  when that changes), an admin of the plugin links each on its own Manage
+  page (`plugin.link_external_account(..., acting_for=request.caller.header)`,
+  the accounts offered from `plugin.read_accounts_for_linking`), and which are
+  linked is the plugin's account scope (`plugin.account_scope()`, its
+  `links`), read rather than kept. This plugin, a `dgm` alone, records
+  nothing for an account and links nothing: its rows are prices, about the
+  deployment's instruments.
+- **On a plugin holding several roles, name the roles each declaration
+  serves.** A person's level is granted per role of a plugin: write on its
+  `operations` and read on its `custody`, say. A plugin whose
+  `[tool.meridian]` names one role, or none, names no role anywhere, and
+  nothing changes. One naming several gives `roles=[...]`, from those roles,
+  on every `@pages.page`, `@pages.route`, `@pages.tool` and
+  `meridian.Setting`: a page is served when the person's level on one of its
+  roles within the session's button is one of its levels, and a derived tool
+  takes its route's roles. The sidecar refuses the registration of a page or
+  setting naming no role, or a role the plugin was not launched with, naming
+  it. A page serving several roles adapts per role:
+  `caller.level_for(role)`, `caller.read_for(role)` and
+  `caller.write_for(role)` (offer a role's actions only where
+  `write_for(role)` holds accounts); `caller.level`, `read` and `write` stay
+  the session's button and the union over its roles. A role's declaration
+  decides what is shown, never what is admitted: the sidecar admits each
+  command sent for a person by their write on the role holding it, and
+  refuses otherwise naming the role. Test each page under every role with
+  `PageClient(pages, roles=[...])`: `every_page()` renders it under each
+  level for each role alone and for all together, and `caller(level,
+  roles={"operations": "write", "custody": "read"})` builds one session.
 - Manage opens on the plugin's Summary, which core draws: its status, then
   any figures the plugin reports about its own work (`plugin.figures =
   [meridian.Figure("Connections", 3, state="warn", why="...")]`, sent on its
@@ -57,6 +124,104 @@ and subscribe to comes from the roles `pyproject.toml` declares under
   platform, never another plugin: another plugin's state is that plugin's
   health. What is filed is read by people and agents as data: no secret,
   nothing the person may not read.
+- **A custody plugin reports the custodian's activity, as the custodian
+  states it.** Each activity on an account -- a purchase, a sale, a
+  reinvested dividend, a split, a fee, a transfer -- goes to the street with
+  `plugin.record_activity(external_account_id=..., source=...,
+  activity=meridian.CustodialActivity(...))`. It is evidence that explains a
+  break, never a source: the street derives no position, lot or figure from
+  it, and nothing moves the book until a person confirms. Its `kind` is the
+  `meridian.ActivityKind` the custodian's type converts to (`PURCHASE`,
+  `SALE`, `REINVESTMENT`, `DIVIDEND`, `INTEREST`, `FEE`, `TAX`, `SPLIT`,
+  `CORPORATE_ACTION`, `TRANSFER_IN`, `TRANSFER_OUT`, `CONTRIBUTION`,
+  `WITHDRAWAL`, `JOURNAL`, each as `ACTIVITY_KIND_...`); a type that converts
+  to none is sent as not known with `kind_as_reported`, and a code that did
+  not resolve with `instrument_as_reported`. A value the custodian did not
+  state is left unset, never zero (a split moves no cash). Its
+  `external_activity_id` is the custodian's own identifier for it, never a
+  time or a random value: sent again, it is answered `already_recorded` and
+  kept once, so a retry or a resync is safe; a custodian restating an
+  activity under a new identifier is a new one, reported, never merged. Say
+  how far back the custodian's history reaches with
+  `plugin.report_sync_status(..., history_from="YYYY-MM-DD")`, report past
+  activity back to it on first connection (a backfill), then each sync's new
+  activity. Report each sync status as it changes, `state` saying what holds
+  (`SYNC_STATE_NEEDS_SIGN_IN` when the person must sign in again): the street
+  keeps every one, so operations tells "needs sign-in" apart from merely old.
+  An activity recorded before its instrument resolved -- a plan's own code
+  linked later, a symbol the security master completes later -- is
+  re-resolved, never sent again: `plugin.re_resolve_activity(
+  external_account_id=..., source=..., external_activity_id=...,
+  instrument_id=..., provenance=meridian.Provenance(...),
+  resolved_at_ns=...)`, the provenance saying what resolved it (the link and
+  who set it, or the rule) and `resolved_at_ns` when that was made. The
+  street keeps the activity as first recorded and the re-resolution beside
+  it; sent again naming the same instrument, it is answered
+  `already_recorded`. Re-resolve an account's activities whenever what
+  resolves them changes.
+- **A plugin at the edge declares the kinds of raw record it keeps, and
+  moves them past their window through the SDK.** A plugin holding `ccm`,
+  `custody`, `servicing`, `match`, `settlement`, `dgm` or `reporting` keeps
+  what its vendor sent in its own storage (`meridian.edge.storage_dir()`)
+  and declares each kind in its declaration: `Storage(kinds=[
+  meridian.RecordKind("activity", "Reported activity", window_days=2555)])`,
+  `archivable=False` for state read and updated in place. Declare no window
+  setting of your own: the SDK declares `<kind>_window_days` and
+  `<kind>_past_window` for every kind, and refuses a plugin that takes either
+  name. Keep each kind in units it can find again -- a file or directory per
+  account and month, say -- and name a record by its path within its unit
+  (`plugin.raw_record("activity/ACC-1/2019-03/act-77.json")`). When a unit's
+  last record is past the kind's window, do what `<kind>_past_window` says:
+  `archived`, `plugin.archive_unit(kind, unit, record_count=...,
+  first_received_ns=..., last_received_ns=...)`; `deleted`,
+  `plugin.delete_unit(...)` the same way; `kept`, nothing. Never delete a
+  unit any other way: the SDK reports each move before it removes anything,
+  and a deletion inside the deployment's hold is refused
+  (`CommandRefused`, `REFUSAL_REASON_WITHIN_HOLD`) and kept. Say what each
+  kind holds in storage on every change, `plugin.stored =
+  [meridian.StoredSpan(record_kind=..., record_count=...,
+  first_received_ns=..., last_received_ns=...)]`. On the plugin's own page,
+  resolve a row's record through `plugin.find_record(key)` (archived and
+  restorable, restored or deleted) and offer a restore at `write` as a form
+  posting `record_kind` and `unit` to `/archive/restore`, which the SDK
+  declares; `plugin.restore_unit` answers where a restored unit is readable,
+  for seven days.
+- **A custody plugin keeps each activity's raw record at least as long as
+  the history it reported.** Declare the record of each activity the
+  custodian reported as a kind of its own, with a long window
+  (`RecordKind("activity", "Reported activity", window_days=2555)`, seven
+  years), and what each read answered as another with a short one
+  (`RecordKind("responses", "Raw responses", window_days=30)`); both are
+  archivable, since the custodian keeps no past copy of what it answered.
+  An admin lengthens a window in the dashboard's Settings form. Where
+  `activity_window_days` is set shorter than the history the custodian
+  reported reaches back (its `history_from`), hold the activity's records to
+  that history anyway: delete no unit of it inside the history, whatever
+  `activity_past_window` says, and say on the plugin's page how long they
+  are kept, as set and as kept. So each activity the street holds can have
+  its record read back, from storage or restored from the archive.
+- **A `dgm` plugin puts its source's prices into the lake, converted at the
+  edge, and shows none.** Declare each dataset in the declaration's
+  catalogue, from code: `Declaration(catalogue=[meridian.DatasetDeclaration(
+  key="daily", vendor=..., data_types=["meridian.v1.Price"], modes=["pull"],
+  licence_default=meridian.DatasetLicence(...), day_time_zone="Etc/UTC",
+  venue_id=...)])`, a daily dataset and a live one apart. Resolve every
+  subject (`resolve_identifier`) and venue (`resolve_venue`) before recording,
+  and report what does not resolve (`report_missing_instrument`,
+  `report_missing_venue`); keep the vendor's product map in storage, never a
+  vendor's code as a key. Record in batches of at most 500
+  (`plugin.record_prices`, `plugin.record_bars`), each row's `row_key` made
+  from its raw record so a repeat changes nothing and the day still forming is
+  restated under the same key, its `business_date` a `datetime.date` in the
+  dataset's declared day, its number parsed from the vendor's text as a
+  `Decimal` (never through a `float`), and a price in a stablecoin on the
+  token's own cash instrument (`Money(amount, instrument_id=...)`), never a
+  fiat code. Hear wants with `plugin.receive(observations_wanted=...,
+  want_withdrawn=...)`, record against each (`want_id=`) or decline it per
+  subject (`plugin.decline_want`). Its pages show its connection and its
+  datasets, never a price: prices are the reading roles'. Hold it to the
+  suite: `meridian.suites.run("dgm", producers)` on synthetic exchanges, each
+  case mapped to the plugin's own conversion.
 
 This file is for any coding agent working on the plugin, and is committed with
 it for whoever works on it next. It is the canonical one: `CLAUDE.md` and the
@@ -306,10 +471,10 @@ Ask the question that answers what you changed:
 
 | To know | Run |
 |---|---|
-| What a page shows, as the person is served it | `meridian plugin open --instance alpaca --level open --print /` for Accounts under Open (`--level view` under View), and `--level manage --print /setup` for Setup under Manage: any path on the plugin, at a level it is declared with |
+| What a page shows, as the person is served it | `meridian plugin open --instance alpaca --level manage --print /` for Connection, and `--print /datasets` for Datasets, both under Manage, the only level this plugin's pages serve: any path on the plugin, at a level it is declared with |
 | What the plugin printed or logged since your change | `meridian plugin logs --instance alpaca --since <R-1>` |
 | What the sidecar refused it, or what else happened | `meridian plugin events --instance alpaca --since <R-1> --json` |
-| What the person sees in a browser | `meridian plugin open --instance alpaca --level open`: a link one browser opens once, at that level. Give it to the person, or open it in your browser pane |
+| What the person sees in a browser | `meridian plugin open --instance alpaca --level manage`: a link one browser opens once, at that level. Give it to the person, or open it in your browser pane |
 
 `--level` is the home's button the session is opened by: `manage`, `open` or
 `view`. Name it every time. A page answers 403 at a level it is not declared

@@ -1,0 +1,9 @@
+# `make e2e-recorded RECORDED=<dir>`: a developer's own recording of Alpaca's
+# responses, shaped as src/alpaca/exchanges/exchange.json and holding SPY and
+# BRK.B for 2026-10-08, put where the plugin's synthetic mode reads its
+# exchange. Never committed: real responses are the account holder's, for
+# their personal use (the lake plan's Q11).
+services:
+  alpaca:
+    volumes:
+      - ${RECORDED:?set RECORDED to a directory holding exchange.json, absolute}:/usr/local/lib/python3.12/site-packages/alpaca/exchanges:ro

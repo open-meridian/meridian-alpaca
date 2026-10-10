@@ -1,0 +1,8 @@
+meridian-alpaca
+Copyright 2026 Societal Lab Inc.
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+Alpaca is a trademark of its owner. This project is not affiliated with or
+endorsed by Alpaca; it connects to Alpaca's Market Data API using a key the
+account holder enters, under Alpaca's terms.

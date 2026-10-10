@@ -1,62 +1,116 @@
-# alpaca
+# meridian-alpaca
 
-Alpaca's US equity and ETF market data as an Open Meridian `dgm`: a
-connectivity spike, made by `meridian plugin new` (meridian-cli 0.1.33's
-template) on open-meridian 0.18.0, the retail pair's first half beside
-meridian-coinbase and meridian-kraken, the crypto pair. It proves Alpaca's
-Market Data API v2 and the conversion into the lake's rows before the lake's
-contract exists; it records nothing, because there is nothing to record into
-yet. The plan is meridian-design's `plans/the-lake-prices-the-book.md`.
+Alpaca's US equity and ETF market data in an [Open Meridian](https://open-meridian.dev)
+deployment, as a `dgm` plugin: daily closes and bars, and live prices, put
+into the deployment's lake for the plugins that value and show a book.
 
-- `src/alpaca/venue.py`: the client. `/v2/stocks/bars` (paged),
-  `/v2/stocks/trades`, the latest trade and quote, snapshots; every request
-  naming its feed, IEX (free) or SIP (every exchange); at most half Alpaca's
-  Basic rate limit (100 calls a minute, one at a time), a 429 waited out.
-  Which feeds the key is entitled to is asked once each
-  (`Alpaca.entitlements`: IEX, SIP past its latest 15 minutes, SIP in real
-  time), and SIP is served for a dataset only where it is. Every response is
-  kept first as a raw record (`raw.py`), in the storage the deployment
-  grants (`meridian.edge.storage_dir()`), else `recordings/`, which git
-  ignores: its request's headers less Alpaca's two authentication headers,
-  and any text holding either part of the key redacted.
-- `src/alpaca/settings.py`: the key's two parts as **secret settings** (and
-  the feed). The plugin reads no environment; the developer's commands take
-  the key from `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` in
-  `tests/keys.py`. Neither part is ever logged, printed, shown or kept.
-- `src/alpaca/rows.py`: **the seam**, identical byte for byte to
-  meridian-coinbase's and meridian-kraken's: the lake's slice 1 rows as
-  plain Python values, to be replaced by the SDK's generated types when the
-  lake's contract lands.
-- `src/alpaca/assets.py`: a US symbol to the subject, the deployment's
-  instrument by the venue's symbol namespaced to the venue (`BRK.B` at
-  `alpaca`; decisions/030), priced in USD's ISO 4217 cash instrument. No
-  global identifier: Alpaca's market data states none, FIGI included.
-- `src/alpaca/convert.py`: Alpaca's values to rows, exact decimals only (its
-  prices are JSON numbers, read as Decimals from their text); the daily
-  close on the declared exchange day (New York's, ending 16:00), the forming
-  day restated; trades with Alpaca's condition codes as reported, no side
-  guessed; level-1 quotes in shares. Which feed each row came from is its
-  dataset: `daily-iex`, `daily-sip`, `live-iex`, `live-sip`.
-- The Connectivity page, under Manage alone: whether Alpaca answers with the
-  configured key (each part set or not, never its value), the feeds the key
-  is entitled to, the datasets it would serve with their feed and licence
-  terms. A `dgm` shows no market data.
+It is the first half of the retail pair, beside
+[meridian-tradier](https://github.com/open-meridian/meridian-tradier): both
+pass the same suite of the SDK, unchanged. Alpaca is also a broker; this
+repository is named for the vendor so that a `custody` or `ccm` role can
+arrive here later without a rename.
 
-Check the gates, and, with a key, look at real rows:
+**Status:** built on open-meridian 0.22.0 (contract 18), which is not yet on
+PyPI. Until it is, this repository's CI is red: every job installs the SDK
+it pins, and a developer's machine builds it from the sibling
+meridian-python checkout instead. Not released.
 
-    make ci-local                                     # lint, tests on synthetic exchanges, plugin check, image, seam unchanged
-    APCA_API_KEY_ID=… APCA_API_SECRET_KEY=… make live           # the live smoke test; never in CI
-    APCA_API_KEY_ID=… APCA_API_SECRET_KEY=… make sample SYMBOL=TQQQ FEED=sip
+## What it serves
 
-(Export the two variables in your shell rather than typing them on the
-command line, if your shell keeps history.) `make live` and `make sample`
-pass the key into the container by name alone, write the real responses
-under `recordings/`, and print booleans and rows, never the key.
+| Dataset | What | From | Arrives | Default terms |
+|---|---|---|---|---|
+| `daily` | each listing's close and daily bar (open, high, low, close, volume, VWAP, trade count) for a business date, New York's day ending at the 16:00 close | Alpaca's consolidated history (SIP), past the free plan's restricted latest 15 minutes | pulled when a reader's read is wanted; pushed once a session's close is final, for the listings it has served | kept; personal use |
+| `live` | the latest trade's price (`last`), the best bid and ask | SIP where the key has it in real time (Algo Trader Plus), else IEX, the one exchange a free account sees | pulled for a read; kept current once a minute while a standing want stands | served, not kept; personal use |
 
-`tests/test_conformance.py` is the retail pair's suite: the crypto pair's
-suite with the equity cases a US listing needs, on the same seam, to be the
-same file in meridian-tradier. `make conformance-same` holds rows.py to
-meridian-coinbase's, and the suite to meridian-tradier's once it is built.
+- A daily price is keyed by a plain date. A day still forming is recorded
+  and restated under the same row as it fills, until its close is final.
+- A live price names the exchange its trade printed on, resolved to the
+  deployment's venue master by Alpaca's own letter (`V` for IEX); a
+  consolidated price names none.
+- Every number is exact, read from Alpaca's own text and never through a
+  float. A value that does not convert is counted on the Datasets page, never
+  recorded.
+- Every response is kept first as a raw record in the storage the deployment
+  grants the plugin, without the key; every row names the one it came from.
+- Not here: Alpaca's crypto (the crypto pair's, meridian-coinbase and
+  meridian-kraken), trades and quotes and Alpaca's stream (with the lake's
+  next revision), options.
 
-`AGENTS.md` teaches any coding agent the kit and the live loop; `CLAUDE.md`
-and the `develop-live` skill under `.claude/` lead Claude Code to it.
+**One limit of contract 18.** The lake asks for a price by the deployment's
+own instrument ID. A `dgm` may resolve its own identifiers to an instrument,
+but may not read an instrument's record, so it can name to Alpaca only the
+listings it resolved itself by Alpaca's symbol. An instrument known to the
+deployment only by another source's identifier (a custodian's symbol, say)
+is declined, not covered, and the Datasets page says why. The code already
+reads an instrument's record where the deployment allows it.
+
+## Alpaca's terms, summarised
+
+Not legal advice: read Alpaca's own terms before relying on this.
+
+- Alpaca's market data is for **personal and non-commercial use**: a
+  non-professional subscriber receives it "solely for their personal,
+  non-business use".
+- **Nothing is republished or redistributed** without Alpaca's written
+  consent. A personal deployment may keep its own copy, for the account
+  holder's own use.
+- The free plan gives real-time data from **IEX alone**, 30 symbols on the
+  stream and 200 calls a minute, with the latest 15 minutes of history
+  restricted; Algo Trader Plus ($99 a month when read) gives every US exchange
+  in real time.
+
+So each dataset's default licence is one person's (`personal_use`), shown and
+used by its holder. The deployment admin confirms or changes it on the Data
+sources page, which warns when more than one person can read a plugin
+entitled to a one-person dataset. Neither this plugin nor its documentation
+says a deployment meets Alpaca's terms: the licence records what the admin
+entered.
+
+## Entering the key
+
+The plugin needs an Alpaca account's API key: a free account's, or a paper
+account's, which does not expire.
+
+1. In Alpaca's dashboard, under **API keys**, generate a key. Alpaca shows
+   the secret key once.
+2. In the deployment, open the plugin under **Manage**, then **Settings**.
+3. Enter the **API key ID** and the **API secret key**. Both are secret
+   settings: once saved they are never shown again, logged, put on a page or
+   sent anywhere but Alpaca.
+4. Open **Connection**: it says whether each part is set (never its value),
+   whether Alpaca answered, and which feeds the key is entitled to.
+5. On the deployment's **Data sources** page, license `daily` and `live`,
+   and entitle the plugins that read prices.
+
+## Checking it live
+
+The live check is the account holder's own, with their own key, on their own
+machine; CI never runs it.
+
+1. `make live` asks for the key ID and the secret key at a prompt that does
+   not echo, and hands them to a container on its standard input. It prints
+   whether Alpaca answered, the feeds the key is entitled to, a week of SPY's
+   and BRK.B's closes from SIP, their latest trade and quote, and
+   `key_in_raw_records: false`; never the key. What Alpaca answered stays in
+   `recordings/`, which git ignores.
+2. `make e2e-recorded RECORDED=recordings/<when>` replays that recording
+   through the e2e on core's plugin harness.
+3. On a development deployment, with the plugin launched and the key entered
+   (above): Connection says **Connected**, IEX in real time and SIP past 15
+   minutes entitled; after a reader asks for a close, Datasets counts it
+   recorded.
+
+## Building it
+
+    make ci-local        lint, the tests (the SDK's dgm suite among them), meridian plugin check, the image, and the e2e
+    make e2e             the plugin on core's plugin harness, synthetic, with no key (e2e/run.py)
+    make preview         the pages on synthetic data, for a browser beside the kit
+    make install-hooks   push runs ci-local first
+
+Everything runs in containers; the host needs Docker and Python 3 for the
+e2e's runner. `docs/` is the plugin's documentation, a draft.
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Ideas and bug
+reports are welcome as issues; see [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -24,3 +24,8 @@ recordings/
 
 # What `make test` leaves behind.
 .test.log
+
+# What `make preview` and `make e2e` leave behind: e2e's is the plugin
+# harness it copied out of the runtime image, and what the run printed.
+preview/
+.e2e/
