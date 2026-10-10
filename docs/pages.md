@@ -16,12 +16,16 @@ exactly what the page shows.
 - **Rate limit:** the plugin spends at most 100 calls a minute, half of
   Alpaca's 200 on the free plan; calls since it started, any answered "too
   many requests" and waited out.
-- **Last call, last error, sessions.**
+- **Last call, last error.**
+- **Stream:** whether it is streaming, how many listings of how many your
+  key may stream, since when; reconnects, and trades caught up after one.
 
 ## Datasets (`read_datasets`)
 
 - Each dataset: its feed, how its rows arrive, its default terms, whether
   your key is entitled to it, and what it recorded, restated, declined and
   could not convert since the plugin started.
-- **Kept current:** the live prices being kept current, and for which
-  listings; how many listings the plugin knows; days still forming.
+- **Kept current:** the standing wants, searched and paged: for which
+  listings, of which dataset, asking what (prices, quotes or trades), and
+  whether they are streamed; how many listings the plugin knows and
+  streams; days still forming.

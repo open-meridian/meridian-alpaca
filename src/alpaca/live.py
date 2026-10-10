@@ -7,8 +7,9 @@ The key is read from standard input, two lines, which `make live` fills from
 a prompt that does not echo; it is never an argument, an environment
 variable or a file, and is never printed. It asks Alpaca which feeds the key
 is entitled to, reads a week of SPY's and BRK.B's daily bars from SIP and
-their latest trade and quote, converts them as the plugin does, and prints
-what it found: booleans, counts and converted values, never the key. It
+their latest trade and quote, converts them as the plugin does, listens to
+Alpaca's stream for them for up to twenty seconds, and prints what it found:
+booleans, counts and converted values, never the key. It
 then checks that no raw record holds either part of the key.
 
 What Alpaca answered is kept under `recordings/` (git-ignored: real responses
@@ -19,6 +20,7 @@ record, and one `exchange.json` shaped as the synthetic exchange, which
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import sys
@@ -28,11 +30,53 @@ from pathlib import Path
 from typing import Any
 
 from . import convert
+from .convert import SourceQuote, SourceTrade
 from .raw import RawStore
 from .settings import Credentials
+from .stream import AlpacaFeed
 from .vendor import IEX, SIP, Alpaca, VendorError
 
 SYMBOLS = ("SPY", "BRK.B")
+#: How long the stream is listened to, at most, and how many messages.
+STREAM_SECONDS, STREAM_MESSAGES = 20.0, 200
+
+
+async def listen(key: Credentials, feed: str, store: RawStore) -> dict[str, Any]:
+    """A short session of Alpaca's stream for SYMBOLS: whether it
+    authenticated, what it stated, counted, and the condition codes seen
+    with how many converted."""
+    from .conditions import trade_attributes
+
+    stream = AlpacaFeed(key, feed, store)
+    heard: dict[str, Any] = {"feed": feed, "authenticated": False, "trades": 0, "quotes": 0}
+    codes: set[str] = set()
+    unconverted: set[str] = set()
+    try:
+        await stream.open()
+        heard["authenticated"] = True
+        await stream.subscribe(list(SYMBOLS))
+        until = time.monotonic() + STREAM_SECONDS
+        messages = 0
+        while messages < STREAM_MESSAGES and time.monotonic() < until:
+            try:
+                stated = await asyncio.wait_for(stream.receive(), until - time.monotonic())
+            except TimeoutError:
+                break
+            messages += len(stated)
+            for each in stated:
+                if isinstance(each, SourceTrade):
+                    heard["trades"] += 1
+                    codes.update(f"{each.tape}:{c}" for c in each.codes)
+                    said = trade_attributes(each.codes, each.tape)
+                    unconverted.update(f"{each.tape}:{u.code}" for u in said.unconverted)
+                elif isinstance(each, SourceQuote):
+                    heard["quotes"] += 1
+    except Exception as failed:  # noqa: BLE001 - said, for the account holder
+        heard["error"] = f"{type(failed).__name__}: {failed}"[:200]
+    finally:
+        await stream.close()
+    heard["codes"], heard["unconverted_codes"] = sorted(codes), sorted(unconverted)
+    return heard
 
 
 def _text(value: Any) -> Any:
@@ -90,8 +134,9 @@ def main(argv: list[str]) -> int:
     said["unconverted"] = sum(len(b.unconverted) for b in bars) + sum(
         len(q.unconverted) for q in live
     )
+    said["stream"] = asyncio.run(listen(key, feed, RawStore(out / "raw")))
     said["calls"], said["rate_limited"] = alpaca.usage.calls, alpaca.usage.rate_limited
-    kept = "".join(p.read_text() for p in (out / "raw").rglob("*.json"))
+    kept = "".join(p.read_text() for p in (out / "raw").rglob("*.json*"))
     said["key_in_raw_records"] = any(secret in kept for secret in key.secrets())
     exchange = {
         "_about": "Recorded from Alpaca by `make live`, for the account holder's personal use.",

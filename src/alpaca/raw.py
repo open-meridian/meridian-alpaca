@@ -91,3 +91,28 @@ class RawStore:
     def records(self) -> Iterator[str]:
         for path in sorted(self.root.rglob("*.json*")):
             yield str(path.relative_to(self.root).with_suffix(""))
+
+
+class StreamLog:
+    """One stream session's messages, kept as a raw record a line each as they
+    arrive (the record `RawStore.get` reads by `#index`). The file is opened
+    once and the lines counted once, so keeping a message costs one write."""
+
+    def __init__(self, store: RawStore, key: str) -> None:
+        self.store = store
+        self.key = key
+        self.path = store._path(key).with_suffix(".jsonl")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.count = sum(1 for _ in self.path.open(encoding="utf-8")) if self.path.exists() else 0
+        self._out = self.path.open("a", encoding="utf-8")
+
+    def keep(self, line: dict[str, Any]) -> str:
+        """Keep one message; the key a row converted from it names."""
+        self._out.write(json.dumps(line, sort_keys=True) + "\n")
+        self._out.flush()
+        index = self.count
+        self.count += 1
+        return f"{self.key}#{index}"
+
+    def close(self) -> None:
+        self._out.close()

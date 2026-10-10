@@ -1,8 +1,9 @@
 """The e2e's reader: a stand-in for whatever reads prices in a deployment (a
-reporting plugin valuing a book), run from the plugin's own image with this
-file mounted, on the SDK alone. It holds `custody` beside `reporting` only
-so that it can name the instruments it asks about as a custodian's book
-would, by resolving their identifiers (W3.1): SPY and BRK.B by Alpaca's own
+reporting plugin valuing a book), and from contract v19 trades and quotes (a
+`signal` plugin: `reporting` reads neither), run from the plugin's own image
+with this file mounted, on the SDK alone. It holds `custody` beside them
+only so that it can name the instruments it asks about as a custodian's
+book would, by resolving their identifiers (W3.1): SPY and BRK.B by Alpaca's own
 symbols, and TQQQ as a custodian's book holds it, by its CUSIP and the
 custodian's symbol alone, a record Alpaca's plugin names to Alpaca by
 reading it (W3.6, a dgm's from contract v18 as ruled 2026-10-10).
@@ -15,10 +16,16 @@ Its page answers JSON, for the harness's runner (`page --instance reader
                                              one read: its rows, what it left
                                              unanswered and why
   /bars?subject=ID&date=D&dataset=D          one read of daily bars
+  /quotes?subject=ID&dataset=D               the latest quotes in force
+  /trades?subject=ID&dataset=D&from=NS&until=NS
+                                             one read of trades over a range
+  /trades?subject=ID&dataset=D&after=W       the trades recorded after a
+                                             watermark (W: what a read said)
 
 Standard library and the SDK only.
 """
 import asyncio
+import base64
 import http.server
 import json
 import threading
@@ -104,6 +111,38 @@ class Reader:
                          "trade_count": bar.trade_count if bar.HasField("trade_count") else None})
         return {"bars": rows, "unanswered": unanswered(answer)}
 
+    async def quotes(self, query):
+        asked, _ = self.asked(query)
+        answer = await self.plugin.list_quotes(**asked)
+        rows = []
+        for quote in answer.quotes:
+            side = lambda name: str(as_money(getattr(quote, name)).amount) if quote.HasField(name) else None
+            size = lambda name: str(as_decimal(getattr(quote, name))) if quote.HasField(name) else None
+            rows.append({**meta_json(quote.meta), "bid": side("bid"), "ask": side("ask"),
+                         "bid_quantity": size("bid_quantity"), "ask_quantity": size("ask_quantity"),
+                         "characteristics": [ops.QuoteCharacteristic.Name(c) for c in quote.characteristics]})
+        return {"quotes": rows, "unanswered": unanswered(answer)}
+
+    async def trades(self, query):
+        asked, one = self.asked(query)
+        if one("after"):
+            asked["after_watermark"] = ops.Watermark.FromString(base64.urlsafe_b64decode(one("after")))
+        else:
+            asked["valid_from_ns"], asked["valid_until_ns"] = int(one("from")), int(one("until"))
+        answer = await self.plugin.list_trades(**asked)
+        rows = []
+        for trade in answer.trades:
+            eligible = lambda e: [ops.Eligible.Name(getattr(e, f)) for f in ("high_low", "open", "close", "volume")]
+            rows.append({**meta_json(trade.meta), "price": str(as_money(trade.price).amount),
+                         "quantity": str(as_decimal(trade.quantity)), "cancelled": trade.cancelled,
+                         "aggressor": ops.Aggressor.Name(trade.aggressor),
+                         "source_sequence": trade.source_sequence,
+                         "characteristics": [ops.TradeCharacteristic.Name(c) for c in trade.attributes.characteristics],
+                         "consolidated": eligible(trade.attributes.consolidated),
+                         "subjects": [s.entity_id for s in trade.meta.subjects]})
+        watermark = base64.urlsafe_b64encode(answer.watermark.SerializeToString()).decode()
+        return {"trades": rows, "unanswered": unanswered(answer), "watermark": watermark}
+
     async def answer(self, path, query):
         if path == "/resolve":
             return await self.resolve()
@@ -111,6 +150,10 @@ class Reader:
             return await self.prices(query)
         if path == "/bars":
             return await self.bars(query)
+        if path == "/quotes":
+            return await self.quotes(query)
+        if path == "/trades":
+            return await self.trades(query)
         return {"page": "the e2e's reader"}
 
 
@@ -140,7 +183,7 @@ def serve(served):
 async def main():
     plugin = await meridian.connect(
         interface=Interface(PORT, "Reader", pages=[
-            Page("/", "Prices", levels=["read"], roles=["reporting"])]),
+            Page("/", "Prices", levels=["read"], roles=["reporting", "signal"])]),
     )
     print("reader registered as", plugin.identity.instance_id, flush=True)
     threading.Thread(target=serve, args=(Reader(plugin),), daemon=True).start()

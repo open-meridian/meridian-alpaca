@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+- On open-meridian 0.23.0 (contract 19): the lake's trades and quotes.
+- `trades`, a new dataset: each trade with the platform's trade attributes,
+  converted from its conditions on its tape (CTA's and UTP's letters), a
+  code with no conversion kept as reported; no aggressor, which Alpaca never
+  states; a cancel, an error or a correction the trade's next version.
+  Streamed for the listings under a standing want, pulled for a range;
+  kept two days by default.
+- `live` gains quotes: the best bid and offer with its sizes, one side
+  empty where Alpaca sends none, streamed at most once a second a listing.
+- Alpaca's stream over WebSocket (the standard library's own client), with
+  reconnect, subscriptions made again from the standing wants, and the gap
+  caught up from Alpaca's trade history; a free account's 30
+  listings kept to, the rest declined, not entitled.
+- Fixed: a second record of one listing is recorded under its own row key
+  (the key names the record, `SPY:1d:2026-10-08@LCL-...`), not under the
+  first's, which the lake versioned as a restatement; a day read again
+  unchanged keeps its raw record, so the lake keeps it unchanged. Rows
+  recorded by 0.2.0 keep their keys.
+- The SDK's suite with its 1b cases: four not presented, each with why.
+- Connection shows the stream; Datasets searches and pages the standing
+  wants (kit 0.11.0).
+
 ## 0.2.0 (unreleased)
 
 - A `dgm` on open-meridian 0.22.0 (contract 18): the catalogue's `daily`

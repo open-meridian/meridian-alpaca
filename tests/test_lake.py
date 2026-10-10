@@ -60,7 +60,7 @@ async def test_a_close_is_its_bars_close_exactly_on_its_new_york_day(tmp_path: P
     assert price.price.currency_code == "USD"
     meta = price.meta
     assert meta.business_date == "2026-10-08"
-    assert meta.row_key == "SPY:1d:2026-10-08"
+    assert meta.row_key == f"SPY:1d:2026-10-08@{SPY}"
     assert meta.source.dataset == "alpaca-1:daily" and meta.source.venue_id == ""
     assert meta.valid_from_ns == at("2026-10-07", 16)
     assert meta.valid_until_ns == at("2026-10-08", 16)
@@ -74,7 +74,7 @@ async def test_a_bar_keeps_vwap_and_trade_count_where_alpaca_states_them(tmp_pat
     recorder, lake, _ = made(tmp_path)
     await lake.daily([SPY, BRK], D8, D8, data_type="meridian.v1.Bar")
     bars = {b.meta.row_key: b for sent in on(recorder, "RecordBars") for b in sent.bars}
-    spy, brk = bars["SPY:1d:2026-10-08"], bars["BRK.B:1d:2026-10-08"]
+    spy, brk = bars[f"SPY:1d:2026-10-08@{SPY}"], bars[f"BRK.B:1d:2026-10-08@{BRK}"]
     assert spy.HasField("vwap") and spy.trade_count == 512375
     assert as_decimal(spy.volume) == Decimal("61237567")
     assert not brk.HasField("vwap")
@@ -93,7 +93,7 @@ async def test_a_forming_day_is_restated_under_one_key_until_final(tmp_path: Pat
     # extended session in case it moves (the lake keeps an identical repeat
     # unchanged); past it, final and read no more.
     assert len(rows) == 3
-    assert {r.meta.row_key for r in rows} == {"SPY:1d:2026-10-09"}
+    assert {r.meta.row_key for r in rows} == {f"SPY:1d:2026-10-09@{SPY}"}
     assert not rows[0].meta.source_times  # still forming: not published
     assert rows[1].meta.source_times[0].kind == ops.SOURCE_TIME_KIND_PUBLISHED
     for row in rows:
@@ -270,6 +270,12 @@ async def test_a_source_that_fails_is_said_and_its_subjects_silent(tmp_path: Pat
         def live(self, *_: Any) -> Any:
             raise OSError("no route to host")
 
+        def trades(self, *_: Any) -> Any:
+            raise OSError("no route to host")
+
+        def quotes(self, *_: Any) -> Any:
+            raise OSError("no route to host")
+
     lake.source = Failing()
     recorder.answer("ObservationsWanted", lambda _: want(SPY, business_date="2026-10-08"))
     await recorder.receive(observations_wanted=lake.on_want)
@@ -302,7 +308,7 @@ async def test_a_book_instrument_known_only_by_another_sources_identifiers_is_pr
     (price,) = sent.prices
     assert [s.entity_id for s in price.meta.subjects] == [TQQQ]
     assert as_decimal(price.price.amount) == Decimal("82.37")
-    assert price.meta.row_key == "TQQQ:1d:2026-10-08"
+    assert price.meta.row_key == f"TQQQ:1d:2026-10-08@{TQQQ}"
     assert lake.products.symbols[TQQQ] == "TQQQ" and lake.reads_instruments
 
 
@@ -327,7 +333,7 @@ async def test_with_no_read_of_an_instrument_its_own_listings_alone_are_served(
     await lake.seed(["BRK.B"])
     (minted,) = [e for e, s in lake.products.symbols.items() if s == "BRK.B"]
     await lake.daily([minted], D8, D8)
-    assert [p.meta.row_key for p in prices(recorder)] == ["BRK.B:1d:2026-10-08"]
+    assert [p.meta.row_key for p in prices(recorder)] == [f"BRK.B:1d:2026-10-08@{minted}"]
 
 
 async def test_a_listing_that_does_not_resolve_is_reported_and_not_kept(tmp_path: Path) -> None:

@@ -6,7 +6,9 @@ file: for looking at the pages without a deployment.
 The page is `connection` (the default), `datasets` or `connection-no-key`.
 Each is served by its own view, as the sidecar would ask it, over the
 built-in synthetic exchange: a week of closes recorded for the exchange's
-listings, two standing wants kept current, and a venue not held. It links
+listings, a cycle of the synthetic stream's trades and quotes, standing
+wants kept current and streamed (enough of them to page and search), and a
+venue not held. It links
 the kit where the dashboard serves it, /.meridian/ui/<version>/, so serve it
 beside the kit to see it styled (meridian-ui's `make serve` serves the kit
 under that path); opened on its own it is the page without the kit,
@@ -27,12 +29,13 @@ from meridian.suites import Recorder
 from meridian.testing import PageClient
 
 from .convert import NEW_YORK
-from .lake import LIVE_KINDS, Lake, Products, Standing
+from .lake import LIVE, LIVE_KINDS, QUOTE, TRADE, TRADES, Lake, Products, Standing
 from .page import CONNECTION, DATASETS, State, pages, use
 from .raw import RawStore
 from .settings import Config
 from .source import AlpacaSource
-from .synthetic import SyntheticTransport, exchange
+from .stream import Streamer
+from .synthetic import SyntheticFeed, SyntheticTransport, exchange
 from .vendor import NS, Alpaca, RateLimiter
 
 #: Saturday after the synthetic week, 09:00 New York.
@@ -62,11 +65,38 @@ def synthetic_state(root: Path) -> State:
         )
         recorder.answer("ResolveVenue", lambda _: ops.ResolveVenueResult(found=False))
         await lake.live(subjects[:2])
-        for n, chunk in enumerate((subjects[:2], subjects[2:])):
-            lake.standing[f"WNT-{n}"] = Standing(f"WNT-{n}", tuple(chunk), LIVE_KINDS, NOW)
+        asks = ((LIVE, "meridian.v1.Price"), (TRADES, TRADE), (LIVE, QUOTE))
+        for n in range(9):
+            chunk = tuple(subjects[n % len(subjects) :] or subjects)
+            dataset, data_type = asks[n % 3]
+            lake.standing[f"WNT-{n}"] = Standing(
+                f"WNT-{n}",
+                chunk,
+                LIVE_KINDS if data_type.endswith("Price") else (),
+                NOW,
+                dataset=dataset,
+                data_type=data_type,
+            )
+        lake.restream()
+        feed = SyntheticFeed(RawStore(root / "raw"), clock_ns=lambda: NOW)
+        await feed.open()
+        await feed.subscribe(lake.streamed)
+        await lake.heard(await feed.receive())
+        await lake.flush(force=True)
+        await feed.close()
 
     asyncio.run(fill())
-    return State(config=Config(synthetic=True), lake=lake, source=source, alpaca=alpaca)
+
+    async def nothing(*_: object) -> None:
+        pass
+
+    streamer = Streamer(lambda: None, nothing, nothing)
+    held = streamer.session
+    held.state, held.feed, held.subscribed = "streaming", "iex", len(lake.streamed)
+    held.opened, held.reconnects, held.messages, held.since_ns = 2, 1, 7, NOW
+    return State(
+        config=Config(synthetic=True), lake=lake, source=source, alpaca=alpaca, streamer=streamer
+    )
 
 
 def main(argv: list[str]) -> int:

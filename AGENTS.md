@@ -1,13 +1,13 @@
 # alpaca
 
 Alpaca's US equity and ETF market data in an Open Meridian deployment's
-lake, as a `dgm` (contract v18). What is particular to this plugin first;
+lake, as a `dgm` (contract v19). What is particular to this plugin first;
 the rest of this file is the SDK template's guidance, which holds for it
 as for every plugin.
 
 ## This plugin
 
-- `src/alpaca/declaration.py`: the catalogue (`daily` and `live`), the
+- `src/alpaca/declaration.py`: the catalogue (`daily`, `live` and `trades`), the
   settings (the key's two secret parts; `synthetic`, a developer's) and the
   storage. A dataset's key, modes, day and default terms change only with a
   new version, and the deployment admin sees them before approving it.
@@ -21,6 +21,10 @@ as for every plugin.
   answered or declined per subject, standing wants kept current, forming
   days restated under one row key, final closes pushed, subjects and venues
   resolved (W3.1, W3.2, W3.14, W3.15).
+- `src/alpaca/stream.py`, `ws.py` and `conditions.py`: Alpaca's stream over
+  WebSocket (the standard library's client), its reconnect and catch-up, and
+  the conditions converted to the platform's trade attributes on each tape.
+  What is streamed is what the standing wants ask (lake.py), never kept here.
 - `src/alpaca/page.py`: Connection and Datasets, under Manage, each a read
   tool (`read_connection`, `read_datasets`). No page shows a price: prices
   are the reading roles', under their entitlement.

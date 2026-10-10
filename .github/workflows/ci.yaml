@@ -9,7 +9,7 @@
 # `meridian plugin upload` does, which is checked by ci-local before every
 # push.
 #
-# Until open-meridian 0.22.0 is on PyPI, this job is red on the runner: the
+# Until open-meridian 0.23.0 is on PyPI, this job is red on the runner: the
 # tests' container installs the SDK pyproject.toml pins, which a developer's
 # machine builds from the sibling meridian-python checkout.
 name: ci

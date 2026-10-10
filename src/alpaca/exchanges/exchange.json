@@ -1,5 +1,5 @@
 {
- "_about": "Synthetic: shaped on Alpaca's documented and recorded responses (Market Data API v2), every value invented. Numbers are text here and sent as JSON numbers, as Alpaca sends them.",
+ "_about": "Synthetic: shaped on Alpaca's documented and recorded responses (Market Data API v2), every value invented. Numbers are text here and sent as JSON numbers, as Alpaca sends them. The stream's messages (`stream`) are replayed by synthetic mode, a cycle every `every_seconds`, each time stamped `at_ms` after the cycle began and its trade IDs moved on by the cycle; `trades_history` answers /v2/stocks/trades.",
  "bars": {
   "SPY": [
    {
@@ -205,5 +205,146 @@
    ],
    "z": "A"
   }
+ },
+ "stream": {
+  "every_seconds": "2",
+  "messages": [
+   {
+    "T": "t",
+    "S": "SPY",
+    "i": "1",
+    "x": "V",
+    "p": "575.44",
+    "s": "100",
+    "c": [
+     "@"
+    ],
+    "z": "B",
+    "at_ms": "0"
+   },
+   {
+    "T": "q",
+    "S": "SPY",
+    "bx": "V",
+    "bp": "575.43",
+    "bs": "200",
+    "ax": "V",
+    "ap": "575.46",
+    "as": "300",
+    "c": [
+     "R"
+    ],
+    "z": "B",
+    "at_ms": "5"
+   },
+   {
+    "T": "t",
+    "S": "SPY",
+    "i": "2",
+    "x": "V",
+    "p": "575.45",
+    "s": "7",
+    "c": [
+     "@",
+     "I"
+    ],
+    "z": "B",
+    "at_ms": "10"
+   },
+   {
+    "T": "t",
+    "S": "SPY",
+    "i": "3",
+    "x": "V",
+    "p": "575.46",
+    "s": "50",
+    "c": [
+     "@",
+     "~"
+    ],
+    "z": "B",
+    "at_ms": "20"
+   },
+   {
+    "T": "x",
+    "S": "SPY",
+    "i": "2",
+    "x": "V",
+    "p": "575.45",
+    "s": "7",
+    "a": "C",
+    "z": "B",
+    "at_ms": "10"
+   },
+   {
+    "T": "q",
+    "S": "BRK.B",
+    "bx": "V",
+    "bp": "455.30",
+    "bs": "100",
+    "ax": "V",
+    "ap": "0",
+    "as": "0",
+    "c": [
+     "R"
+    ],
+    "z": "A",
+    "at_ms": "30"
+   },
+   {
+    "T": "t",
+    "S": "BRK.B",
+    "i": "4",
+    "x": "V",
+    "p": "455.31",
+    "s": "25",
+    "c": [
+     "@",
+     "I"
+    ],
+    "z": "A",
+    "at_ms": "40"
+   },
+   {
+    "T": "t",
+    "S": "TQQQ",
+    "i": "5",
+    "x": "V",
+    "p": "82.41",
+    "s": "300",
+    "c": [
+     "@",
+     "T"
+    ],
+    "z": "C",
+    "at_ms": "50"
+   }
+  ]
+ },
+ "trades_history": {
+  "SPY": [
+   {
+    "t": "2026-10-09T19:59:58.100000000Z",
+    "i": "52983525029401",
+    "x": "V",
+    "p": "575.40",
+    "s": "100",
+    "c": [
+     "@"
+    ],
+    "z": "B"
+   },
+   {
+    "t": "2026-10-09T19:59:59.512345678Z",
+    "i": "52983525029461",
+    "x": "V",
+    "p": "575.44",
+    "s": "100",
+    "c": [
+     "@"
+    ],
+    "z": "B"
+   }
+  ]
  }
 }

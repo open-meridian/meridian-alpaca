@@ -1,5 +1,5 @@
 """The Alpaca plugin: Alpaca's US equity and ETF market data in an Open Meridian
-deployment's lake, as a `dgm` (contract v18; plans/the-lake-prices-the-book,
+deployment's lake, as a `dgm` (contract v19; plans/the-lake-prices-the-book,
 the retail pair).
 
 It connects to the sidecar it is launched beside, declaring its catalogue,
@@ -9,7 +9,9 @@ each delivery of its settings it makes its Alpaca client again with the key
 is entitled to; then it hears what the lake wants of it and records against
 each want or declines it per subject (lake.py), and keeps its timetable:
 standing wants kept current, days still forming read again, a final close
-pushed.
+pushed. While any standing want stands, it streams Alpaca's trades and
+quotes for the listings wanted (stream.py), reconnecting when the stream
+breaks and catching up the gap.
 
 It holds nothing it cannot lose: what each subject's symbol is, and every
 raw response, are in the storage the deployment grants it (decisions/028);
@@ -38,8 +40,9 @@ from .page import TITLE, State, pages, serve
 from .raw import RawStore, storage_root
 from .settings import DECLARED, Config, config_from
 from .source import AlpacaSource
-from .synthetic import SyntheticTransport, exchange
-from .vendor import Alpaca, NoKey, VendorError, urllib_transport
+from .stream import AlpacaFeed, Feed, Streamer, symbol_limit
+from .synthetic import SyntheticFeed, SyntheticTransport, exchange
+from .vendor import IEX, Alpaca, NoKey, VendorError, urllib_transport
 
 log = logging.getLogger("alpaca")
 
@@ -57,6 +60,27 @@ def source_for(config: Config, store: RawStore) -> tuple[Alpaca | None, AlpacaSo
         return None, None
     alpaca = Alpaca(store, config.credentials, transport=urllib_transport)
     return alpaca, AlpacaSource(alpaca)
+
+
+def feed_for(state: State, store: RawStore) -> Feed | None:
+    """The stream the settings give: synthetic, Alpaca's on the feed the key
+    has in real time, or none while the key is incomplete."""
+    config = state.config
+    if config.synthetic:
+        return SyntheticFeed(store)
+    if config.credentials is None:
+        return None
+    known = state.source.known if state.source is not None else None
+    feed = known.live_feed if known is not None and known.answered else IEX
+    return AlpacaFeed(config.credentials, feed, store)
+
+
+def stream_limit(state: State) -> int | None:
+    """How many listings the key may stream at once."""
+    if state.config.synthetic:
+        return None
+    known = state.source.known if state.source is not None else None
+    return symbol_limit(known.live_feed if known is not None else IEX)
 
 
 async def health(plugin: meridian.Plugin, state: State) -> None:
@@ -94,6 +118,11 @@ async def watch_settings(
                 await state.lake.seed(sorted(exchange()["bars"]))
         configured.set()
         await health(plugin, state)
+        if state.lake is not None:
+            state.lake.stream_limit = stream_limit(state)
+            state.lake.restream()
+        if state.streamer is not None:
+            state.streamer.restart()
 
 
 async def timetable(lake: Lake) -> None:
@@ -143,6 +172,10 @@ async def run() -> None:
         )
         lake = Lake(plugin, None, Products(granted / "products.json" if granted else None))
         state = State(lake=lake)
+        streamer = Streamer(
+            lambda: feed_for(state, store), lake.heard, lake.flush, caught_up=lake.caught_up
+        )
+        lake.streamer = state.streamer = streamer
         configured = asyncio.Event()
         page = serve(plugin, state, port)
         tasks = [
@@ -162,6 +195,7 @@ async def run() -> None:
             )
         )
         tasks.append(asyncio.create_task(again(lambda: timetable(lake), "the timetable")))
+        tasks.append(asyncio.create_task(again(streamer.run, "the stream")))
         log.info("serving its pages on 127.0.0.1:%d, hearing the lake's wants", port)
         await stopped.wait()
         log.info("stopping")

@@ -1,33 +1,37 @@
-"""The `dgm` suite, the SDK's own (meridian.suites, contract v18), run unchanged
+"""The `dgm` suite, the SDK's own (meridian.suites, contract v19), run unchanged
 against this plugin: every case mapped to the plugin's own conversion, from
-Alpaca's synthetic exchange, through the lake's half it runs in production
-(lake.py), against the suite's `Recorder`.
+Alpaca's synthetic exchange and stream, through the lake's half it runs in
+production (lake.py), against the suite's `Recorder`.
 
-Two cases describe what Alpaca's US equity data never presents: a currency's
-rate against another currency, and a crypto asset quoted in a stablecoin.
-The suite has no way to say a source does not present a case unless it
-asserts one value of a closed list, and these do not; so each is mapped to
-the plugin's own recording path, with the row the plugin would send were its
-source to state one. That proves the plugin names a cash instrument and a
-token's own instrument as the contract has them, not that Alpaca serves
-either. The same holds for meridian-tradier, and is raised with the lake's
-plan.
+Four cases are not presented, each with why (`NOT_PRESENTED`), as the suite
+lets a case about a kind of data (`about`) go unpresented from contract
+v19. Two are about kinds Alpaca's US stock data never publishes: a
+currency's rate against another currency, and a crypto asset's price (its
+crypto is left to the crypto pair). Two are about trades, which it does
+publish, but each asks for the side that took liquidity, which Alpaca's
+stock trades never state: a regular trade with its aggressor, and a maker's
+side inverted. The contract records no aggressor it is not told
+(`Trade.aggressor`: never guessed from the price), so neither can be
+presented without inventing one; this stretches `about`, whose kind is
+trades, and is raised with the lake's plan. The trade's attributes those
+cases also check are proven in test_lake.py.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
-import meridian
-from meridian import Money, ObservationMeta, Price, SourceTime
 from meridian.plugin.v1 import operations_pb2 as ops
 from meridian.suites import Recorder, run
 
-from alpaca.lake import DAILY, LIVE_KINDS, PRICE, Standing
+from alpaca import convert
+from alpaca.lake import LIVE_KINDS, Standing
 
 from conftest import (
     BRK,
@@ -49,6 +53,35 @@ AFTER = at("2026-10-10", 9)
 DURING = at("2026-10-09", 15)
 
 Producer = Callable[[Recorder], Awaitable[None]]
+
+#: The cases Alpaca's stock data does not present, and why (above).
+NOT_PRESENTED = {
+    "an-fx-rate": "Alpaca's US stock data states no currency's rate against another",
+    "a-stablecoin-quote": "a dgm of US stocks: Alpaca's crypto is the crypto pair's",
+    "a-trade-recorded": "Alpaca's stock trades never state which side took liquidity",
+    "the-makers-side-inverted": "Alpaca's stock trades state neither side of a trade",
+}
+
+#: A moment in the session, for the stream's messages.
+LIVE_AT = "2026-10-09T15:30:00.123456789Z"
+
+
+#: The fields Alpaca sends as numbers.
+NUMBERS = frozenset({"i", "p", "s", "bp", "bs", "ap", "as"})
+
+
+def message(**fields: Any) -> dict[str, Any]:
+    """One of Alpaca's stream messages, its numbers parsed as Alpaca's are:
+    each from its own text, a Decimal where it has a point."""
+    said = {"t": LIVE_AT, "z": "B", "x": "V", **fields}
+    text = (
+        "{"
+        + ",".join(
+            f"{json.dumps(k)}:{v if k in NUMBERS else json.dumps(v)}" for k, v in said.items()
+        )
+        + "}"
+    )
+    return dict(json.loads(text, parse_float=Decimal))
 
 
 def producers(tmp: Path) -> dict[str, Producer]:
@@ -86,28 +119,68 @@ def producers(tmp: Path) -> dict[str, Producer]:
         # BRK.B's bars state no VWAP.
         await wanted(recorder, want(BRK, data_type="meridian.v1.Bar", business_date=DAY))
 
-    async def fx(recorder: Recorder) -> None:
-        # Not presented by Alpaca's equity data (above): the plugin's
-        # recording path, given the rate its source would state.
-        held = lake(recorder)
-        eur = await recorder.resolve_identifier(
-            identifiers=[meridian.Identifier(scheme="iso4217", value="EUR")]
+    async def streamed(recorder: Recorder, *messages: dict[str, Any], subject: str = SPY) -> None:
+        # A standing want of the trades: the listing streamed, and what the
+        # stream states recorded, as the plugin's stream hands it on.
+        held = lake(recorder, DURING)
+        event = want(
+            subject, dataset="suite-plugin:trades", data_type="meridian.v1.Trade", standing=True
         )
-        await held._record(
-            DAILY, PRICE, [_row(held, eur.instrument_id, Money(Decimal("1.0921"), "USD"))], ""
+        recorder.answer("ObservationsWanted", lambda _: event)
+        await recorder.receive(observations_wanted=held.on_want)
+        for n, said in enumerate(messages):
+            await held.heard(convert.streamed(said, f"stream/iex/suite#{n}", "iex"))
+        await held.flush(force=True)
+
+    async def condition(recorder: Recorder) -> None:
+        # An odd lot on tape B: the CTA's `I`.
+        await streamed(recorder, message(T="t", S="SPY", i=7, p="575.45", s=7, c=["@", "I"]))
+
+    async def not_converted(recorder: Recorder) -> None:
+        await streamed(recorder, message(T="t", S="SPY", i=8, p="575.46", s=50, c=["@", "~"]))
+
+    async def withdrawn_trade(recorder: Recorder) -> None:
+        stated = message(T="t", S="SPY", i=9, p="575.47", s=100, c=["@"])
+        cancel = message(T="x", S="SPY", i=9, p="575.47", s=100, a="C")
+        await streamed(recorder, stated, cancel)
+
+    async def quote(recorder: Recorder) -> None:
+        await streamed(
+            recorder,
+            message(
+                T="q",
+                S="SPY",
+                bx="V",
+                bp="575.43",
+                bs=200,
+                ax="V",
+                ap="575.46",
+                **{"as": 300},
+                c=["R"],
+            ),
         )
 
-    async def stablecoin(recorder: Recorder) -> None:
-        # Not presented by Alpaca's equity data (above).
-        held = lake(recorder)
-        btc = await recorder.resolve_identifier(
-            identifiers=[meridian.Identifier(scheme="symbol", value="BTC", source="alpaca")]
+    async def one_sided(recorder: Recorder) -> None:
+        # BRK.B's offer side empty: Alpaca sends it as 0.
+        await streamed(
+            recorder,
+            message(
+                T="q",
+                S="BRK.B",
+                bx="V",
+                bp="455.30",
+                bs=100,
+                ax="V",
+                ap=0,
+                **{"as": 0},
+                c=["R"],
+                z="A",
+            ),
+            subject=BRK,
         )
-        usdc = await recorder.resolve_identifier(
-            identifiers=[meridian.Identifier(scheme="symbol", value="USDC", source="alpaca")]
-        )
-        money = Money(Decimal("62431.27"), instrument_id=usdc.instrument_id)
-        await held._record(DAILY, PRICE, [_row(held, btc.instrument_id, money)], "")
+
+    async def standing_streamed(recorder: Recorder) -> None:
+        await streamed(recorder, message(T="t", S="SPY", i=10, p="575.48", s=100, c=["@"]))
 
     async def ambiguous(recorder: Recorder) -> None:
         # The listing's symbol meets two of the deployment's records.
@@ -163,8 +236,6 @@ def producers(tmp: Path) -> dict[str, Producer]:
         "the-forming-day-restated": forming,
         "an-exact-price": exact,
         "a-daily-bar": bar,
-        "an-fx-rate": fx,
-        "a-stablecoin-quote": stablecoin,
         "an-asset-that-does-not-resolve": ambiguous,
         "a-venue-resolved": venue,
         "a-venue-not-held": venue_not_held,
@@ -172,32 +243,20 @@ def producers(tmp: Path) -> dict[str, Producer]:
         "a-subject-another-source-resolved": elsewhere,
         "a-subject-declined": declined,
         "a-standing-want-withdrawn": withdrawn,
+        "a-condition-converted": condition,
+        "a-condition-not-converted": not_converted,
+        "a-trade-withdrawn": withdrawn_trade,
+        "a-quote-recorded": quote,
+        "a-one-sided-quote": one_sided,
+        "a-standing-want-streamed": standing_streamed,
     }
 
 
-def _row(held, subject: str, money: Money) -> Price:  # type: ignore[no-untyped-def]
-    day = dt.date(2026, 10, 8)
-    return Price(
-        meta=ObservationMeta(
-            row_key=f"{subject}:1d:{day}",
-            subjects=[ops.SubjectRef(entity_id=subject)],
-            source=ops.Source(dataset=held.dataset(DAILY)),
-            valid_from_ns=at("2026-10-07", 16),
-            valid_until_ns=at("2026-10-08", 16),
-            business_date=day,
-            source_times=[SourceTime(kind="published", at_ns=at("2026-10-08", 16))],
-            raw=held.plugin.raw_record("not-presented"),
-        ),
-        kind="close",
-        price=money,
-        basis="per_unit",
-    )
-
-
 def test_the_dgm_suite_passes_unchanged(tmp_path: Path) -> None:
-    report = run("dgm", producers(tmp_path))
+    report = run("dgm", producers(tmp_path), not_presented=NOT_PRESENTED)
     assert report.passed, report.failures
-    assert len(report.passed_cases) == 13
+    assert len(report.passed_cases) == 17
+    assert sorted(report.not_presented) == sorted(NOT_PRESENTED)
 
 
 def test_a_price_read_through_a_float_fails_the_suite(tmp_path: Path, restore_parse: None) -> None:
@@ -206,5 +265,5 @@ def test_a_price_read_through_a_float_fails_the_suite(tmp_path: Path, restore_pa
     import alpaca.vendor as vendor
 
     vendor.parse = lambda text: json.loads(text, parse_float=float)
-    report = run("dgm", producers(tmp_path))
+    report = run("dgm", producers(tmp_path), not_presented=NOT_PRESENTED)
     assert "an-exact-price" in report.failures, report.failures

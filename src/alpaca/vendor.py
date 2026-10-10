@@ -1,11 +1,12 @@
 """Alpaca's Market Data API v2 for US stocks: the one module that speaks to it.
 
 REST at data.alpaca.markets: `/v2/stocks/bars` (daily bars, paged),
-`/v2/stocks/trades/latest` and `/v2/stocks/quotes/latest`. Every request
-names its feed, `sip` (every US exchange, consolidated) or `iex` (the one
-exchange a free account sees in real time), because Alpaca's own default
-differs by subscription. Nothing here streams: Alpaca's WebSocket feed waits
-for the lake's trades and quotes (contract v19).
+`/v2/stocks/trades` (a range of trades, paged: a pull, and the gap after a
+stream reconnects), `/v2/stocks/trades/latest` and
+`/v2/stocks/quotes/latest`. Every request names its feed, `sip` (every US
+exchange, consolidated) or `iex` (the one exchange a free account sees in
+real time), because Alpaca's own default differs by subscription. The
+stream, at `STREAM` and the feed's name, is stream.py's.
 
 **The key.** Alpaca's two headers, `APCA-API-KEY-ID` and
 `APCA-API-SECRET-KEY`, from `settings.Credentials`. They are added to the
@@ -47,7 +48,9 @@ from .raw import RawStore
 from .settings import Credentials
 
 DATA = "https://data.alpaca.markets"
-USER_AGENT = "meridian-alpaca/0.2.0 (+https://open-meridian.dev)"
+USER_AGENT = "meridian-alpaca/0.3.0 (+https://open-meridian.dev)"
+#: Alpaca's market data stream, a feed's name after it (`/v2/iex`, `/v2/sip`).
+STREAM = "wss://stream.data.alpaca.markets/v2"
 NS = 1_000_000_000
 
 IEX = "iex"
@@ -317,6 +320,34 @@ class Alpaca:
                 return out
         raise ValueError(f"bars: more than {pages} pages; ask for less")
 
+    def trades(
+        self, symbols: Sequence[str], start_ns: int, end_ns: int, feed: str, pages: int = 20
+    ) -> list[Fetched]:
+        """The trades from `start_ns` to `end_ns`, oldest first, every page
+        kept: asked of the live feed, which the key has in real time."""
+        params = {
+            "symbols": ",".join(symbols),
+            "start": _iso_ns(start_ns),
+            "end": _iso_ns(end_ns),
+            "sort": "asc",
+            "limit": str(PAGE_LIMIT),
+            "feed": feed,
+        }
+        out: list[Fetched] = []
+        token = ""
+        for _ in range(pages):
+            fetched = self.get(
+                "trades",
+                f"trades/{feed}",
+                "/v2/stocks/trades",
+                {**params, **({"page_token": token} if token else {})},
+            )
+            out.append(fetched)
+            token = str(fetched.value.get("next_page_token") or "")
+            if not token:
+                return out
+        raise ValueError(f"trades: more than {pages} pages; ask for less")
+
     def latest_trades(self, symbols: Sequence[str], feed: str) -> Fetched:
         params = {"symbols": ",".join(symbols), "feed": feed}
         return self.get(
@@ -371,6 +402,12 @@ def _message(text: str) -> str:
 
 def _iso(at_ns: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at_ns // NS))
+
+
+def _iso_ns(at_ns: int) -> str:
+    """A moment as RFC 3339, to the nanosecond."""
+    seconds, fraction = divmod(at_ns, NS)
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(seconds)) + f".{fraction:09d}Z"
 
 
 def _new_york_end_ns(day: str) -> int:

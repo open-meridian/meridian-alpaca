@@ -1,8 +1,9 @@
 # meridian-alpaca
 
 Alpaca's US equity and ETF market data in an [Open Meridian](https://open-meridian.dev)
-deployment, as a `dgm` plugin: daily closes and bars, and live prices, put
-into the deployment's lake for the plugins that value and show a book.
+deployment, as a `dgm` plugin: daily closes and bars, live prices and
+quotes, and trades, put into the deployment's lake for the plugins that
+value and show a book.
 
 It is the first half of the retail pair, beside
 [meridian-tradier](https://github.com/open-meridian/meridian-tradier): both
@@ -10,17 +11,16 @@ pass the same suite of the SDK, unchanged. Alpaca is also a broker; this
 repository is named for the vendor so that a `custody` or `ccm` role can
 arrive here later without a rename.
 
-**Status:** built on open-meridian 0.22.0 (contract 18), which is not yet on
-PyPI. Until it is, this repository's CI is red: every job installs the SDK
-it pins, and a developer's machine builds it from the sibling
-meridian-python checkout instead. Not released.
+**Status:** 0.3.0, on open-meridian 0.23.0 (contract 19), proven against core
+e149c69's runtime and plugin harness. Not released.
 
 ## What it serves
 
 | Dataset | What | From | Arrives | Default terms |
 |---|---|---|---|---|
 | `daily` | each listing's close and daily bar (open, high, low, close, volume, VWAP, trade count) for a business date, New York's day ending at the 16:00 close | Alpaca's consolidated history (SIP), past the free plan's restricted latest 15 minutes | pulled when a reader's read is wanted; pushed once a session's close is final, for the listings it has served | kept; personal use |
-| `live` | the latest trade's price (`last`), the best bid and ask | SIP where the key has it in real time (Algo Trader Plus), else IEX, the one exchange a free account sees | pulled for a read; kept current once a minute while a standing want stands | served, not kept; personal use |
+| `live` | the latest trade's price (`last`), the best bid and ask; the best bid and offer as a quote, with its sizes | SIP where the key has it in real time (Algo Trader Plus), else IEX, the one exchange a free account sees | pulled for a read; while a standing want stands, prices kept current once a minute and quotes streamed, at most one a second per listing | served, not kept; personal use |
+| `trades` | each trade with the platform's trade attributes, converted from its conditions | the same feed as `live` | streamed for the listings under a standing want; pulled for a range a reader wants | kept two days; personal use |
 
 - A daily price is keyed by a plain date. A day still forming is recorded
   and restated under the same row as it fills, until its close is final.
@@ -30,11 +30,46 @@ meridian-python checkout instead. Not released.
 - Every number is exact, read from Alpaca's own text and never through a
   float. A value that does not convert is counted on the Datasets page, never
   recorded.
-- Every response is kept first as a raw record in the storage the deployment
-  grants the plugin, without the key; every row names the one it came from.
+- Every response, and every stream message, is kept first as a raw record in
+  the storage the deployment grants the plugin, without the key; every row
+  names the one it came from.
+- Each row under its own record's key: where the deployment holds two
+  records of one listing (one Alpaca's, one a custodian's, not yet merged),
+  each record's rows are its own, the key naming the record
+  (`SPY:1d:2026-10-08@LCL-...`), never one recorded over the other. A day
+  read again unchanged is kept unchanged. Rows recorded before 0.3.0 keep
+  their keys and stand beside the new ones.
 - Not here: Alpaca's crypto (the crypto pair's, meridian-coinbase and
-  meridian-kraken), trades and quotes and Alpaca's stream (with the lake's
-  next revision), options.
+  meridian-kraken), options.
+
+## Trades and quotes, streamed
+
+- **What is streamed** is what the lake keeps current: the listings under a
+  standing want, of the live prices, the quotes or the trades, and nothing
+  while there is none. A free account streams IEX alone, at most 30
+  listings; a listing past that is declined, not entitled, and counted on
+  the Datasets page.
+- **A trade's attributes** are converted from its conditions, on its tape
+  (the CTA's letters on tapes A and B, the UTP's on C): whether it may set
+  the high and low, the open, the close and the volume, of the consolidated
+  bar and of its exchange's, and what it was (an odd lot, extended hours,
+  an intermarket sweep, an opening or closing auction print, and so on). A
+  code with no conversion is kept as reported, its eligibilities not known,
+  and counted. No aggressor: Alpaca's stock trades never say which side
+  took liquidity, and none is guessed.
+- **A withdrawal** (a cancel or an error) or a **correction** is the trade's
+  next version under its row key.
+- **Reconnect and catch-up.** A stream that breaks is opened again, a second
+  later and then doubling to a minute, and subscribed again from what is
+  wanted. The gap is read from Alpaca's trade history, and only the trades
+  not yet recorded are sent, so the lake holds every trade and a reader
+  that lost some catches up from it. A process started anew streams nothing
+  until the lake asks for a want again: contract v19 gives a dgm no way to
+  read the standing wants back.
+- **The suite.** Four of its cases are not presented, each with why: a
+  currency's rate and a crypto asset's price (kinds Alpaca's stock data never
+  publishes), and the two that ask for the side that took liquidity, which
+  Alpaca never states.
 
 **Instruments another source named.** The lake asks for a price by the
 deployment's own instrument ID. An instrument known to the deployment only
@@ -80,8 +115,8 @@ account's, which does not expire.
    sent anywhere but Alpaca.
 4. Open **Connection**: it says whether each part is set (never its value),
    whether Alpaca answered, and which feeds the key is entitled to.
-5. On the deployment's **Data sources** page, license `daily` and `live`,
-   and entitle the plugins that read prices.
+5. On the deployment's **Data sources** page, license `daily`, `live` and
+   `trades`, and entitle the plugins that read prices, trades and quotes.
 
 ## Checking it live
 
@@ -91,15 +126,18 @@ machine; CI never runs it.
 1. `make live` asks for the key ID and the secret key at a prompt that does
    not echo, and hands them to a container on its standard input. It prints
    whether Alpaca answered, the feeds the key is entitled to, a week of SPY's
-   and BRK.B's closes from SIP, their latest trade and quote, and
-   `key_in_raw_records: false`; never the key. What Alpaca answered stays in
+   and BRK.B's closes from SIP, their latest trade and quote, twenty seconds
+   of Alpaca's stream for them (the condition codes seen, and any not
+   converted), and `key_in_raw_records: false`; never the key. What Alpaca answered stays in
    `recordings/`, which git ignores.
 2. `make e2e-recorded RECORDED=recordings/<when>` replays that recording
    through the e2e on core's plugin harness.
 3. On a development deployment, with the plugin launched and the key entered
    (above): Connection says **Connected**, IEX in real time and SIP past 15
    minutes entitled; after a reader asks for a close, Datasets counts it
-   recorded.
+   recorded; after a reader asks for a listing's latest quote, Connection's
+   **Stream** says it streams that listing, and Datasets counts its trades
+   and quotes.
 
 ## Building it
 

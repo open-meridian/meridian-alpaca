@@ -1,10 +1,11 @@
 """Alpaca, as the lake's half of the plugin asks it (lake.Source).
 
 Daily bars from SIP's consolidated history, past a free account's
-restricted 15 minutes; live prices from SIP where the key has it in real
-time, else from IEX, the one exchange a free account sees, each row naming
-the exchange it is from. Which feeds the key is entitled to is asked once,
-and again when the key changes; the Connection page shows the answer.
+restricted 15 minutes; live prices, quotes and a range of trades from SIP
+where the key has it in real time, else from IEX, the one exchange a free
+account sees, each row naming the exchange it is from. Which feeds the key
+is entitled to is asked once, and again when the key changes; the
+Connection page shows the answer.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import threading
 from collections.abc import Sequence
 
 from . import convert
-from .convert import DailyBar, Quoted
+from .convert import DailyBar, Quoted, SourceQuote, SourceTrade
 from .vendor import IEX, SIP, SYMBOLS_PER_CALL, Alpaca, Entitlements
 
 
@@ -50,8 +51,33 @@ class AlpacaSource:
                 bars.extend(convert.daily_bars(page))
         return bars
 
+    @property
+    def live_feed(self) -> str:
+        """The feed live data comes from: SIP where the key has it in real
+        time, else IEX (synthetic: IEX)."""
+        return IEX if self.synthetic else self.entitlements().live_feed
+
+    def trades(self, symbols: Sequence[str], start_ns: int, end_ns: int) -> list[SourceTrade]:
+        """The trades from `start_ns` to `end_ns`, from the live feed."""
+        feed = self.live_feed
+        trades: list[SourceTrade] = []
+        for start in range(0, len(symbols), SYMBOLS_PER_CALL):
+            chunk = symbols[start : start + SYMBOLS_PER_CALL]
+            for page in self.alpaca.trades(chunk, start_ns, end_ns, feed):
+                trades.extend(convert.trades_page(page))
+        return trades
+
+    def quotes(self, symbols: Sequence[str]) -> list[SourceQuote]:
+        """The latest best bid and offer of each listing, from the live feed."""
+        feed = self.live_feed
+        quotes: list[SourceQuote] = []
+        for start in range(0, len(symbols), SYMBOLS_PER_CALL):
+            chunk = symbols[start : start + SYMBOLS_PER_CALL]
+            quotes.extend(convert.latest_quote_rows(self.alpaca.latest_quotes(chunk, feed)))
+        return quotes
+
     def live(self, symbols: Sequence[str]) -> list[Quoted]:
-        feed = self.entitlements().live_feed if not self.synthetic else IEX
+        feed = self.live_feed
         quoted: list[Quoted] = []
         for start in range(0, len(symbols), SYMBOLS_PER_CALL):
             chunk = symbols[start : start + SYMBOLS_PER_CALL]

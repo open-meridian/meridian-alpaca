@@ -11,9 +11,10 @@ import pytest
 from meridian.suites import Recorder
 from meridian.testing import PageClient
 
-from alpaca.lake import LIVE_KINDS, Standing
+from alpaca.lake import LIVE_KINDS, TRADES, Standing
 from alpaca.page import CONNECTION, DATASETS, State, pages, use
 from alpaca.settings import Config, Credentials
+from alpaca.stream import Streamer
 from alpaca.vendor import Entitlements
 
 from conftest import RECORDS, SPY, Clock, answer_records, at, synthetic_lake
@@ -27,12 +28,24 @@ def synthetic_state(tmp: Path) -> State:
     lake = synthetic_lake(recorder, Clock(at("2026-10-10", 9)), tmp)
     asyncio.run(lake.daily([SPY], *(__import__("datetime").date(2026, 10, 8),) * 2))
     lake.standing["WNT-1"] = Standing("WNT-1", (SPY,), LIVE_KINDS, at("2026-10-10", 9))
+    lake.standing["WNT-2"] = Standing(
+        "WNT-2", (SPY,), (), 0, dataset=TRADES, data_type="meridian.v1.Trade"
+    )
+    lake.restream()
     assert lake.source is not None
+
+    async def nothing(*_: object) -> None:
+        pass
+
+    streamer = Streamer(lambda: None, nothing, nothing)
+    streamer.session.state, streamer.session.feed = "streaming", "iex"
+    streamer.session.subscribed, streamer.session.reconnects = 1, 2
     return State(
         config=Config(synthetic=True),
         lake=lake,
         source=lake.source,  # type: ignore[arg-type]
         alpaca=lake.source.alpaca,  # type: ignore[attr-defined]
+        streamer=streamer,
     )
 
 
@@ -57,7 +70,9 @@ def test_the_connection_page_and_its_tool_read_one_source(client: PageClient) ->
     data = answer.data
     assert data["mode"] == "synthetic" and data["daily_feed"] == "sip"
     assert data["limit_per_minute"] == 100 and data["vendor_limit_per_minute"] == 200
-    assert data["sessions"] == []
+    (session,) = data["sessions"]
+    assert session["state"] == "streaming" and session["subscribed"] == 1
+    assert session["reconnects"] == 2 and "1 listings on IEX" in page
 
 
 def test_the_datasets_page_and_its_tool_read_one_source(client: PageClient) -> None:
@@ -70,6 +85,13 @@ def test_the_datasets_page_and_its_tool_read_one_source(client: PageClient) -> N
     live = next(d for d in data["datasets"] if d["key"] == "live")
     assert live["kept_by_default"] is False and live["modes"] == ["pull", "stream"]
     assert data["standing"][0]["symbols"] == ["SPY"] and data["listings"] == 1
+    trades = next(d for d in data["datasets"] if d["key"] == "trades")
+    assert trades["modes"] == ["pull", "stream"] and trades["kept_days"] == 2
+    assert [w["asks"] for w in data["standing"]] == ["last, bid, ask", "trades"]
+    assert all(w["streamed"] for w in data["standing"]) and data["streamed"] == 1
+    # The standing wants grow: searched beside the kit's pager.
+    assert '<om-pager search="Search standing wants">' in page and "kept 2 days" in page
+    assert "/.meridian/ui/0.11.0/" in page
 
 
 def test_no_key_value_and_no_price_is_ever_shown(tmp_path: Path) -> None:

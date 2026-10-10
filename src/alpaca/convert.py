@@ -32,7 +32,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -266,3 +266,194 @@ def latest_quotes(fetched: Fetched) -> Iterator[Quoted]:
                 raw_key=f"{fetched.raw_key}#{symbol}/{kind}",
                 unconverted=tuple(values.unconverted),
             )
+
+
+# ── Trades and quotes (contract v19) ────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SourceTrade:
+    """One trade as Alpaca states it, on its stream (`T: t`) or in its trade
+    history: the exchange it printed on (`x`), its price and size, its
+    conditions on its tape (`c`, `z`), and Alpaca's trade ID (`i`), which is
+    the exchange's for that day. A withdrawal (`T: x`, a cancel or an error;
+    or the first half of a correction, `T: c`) names the trade it withdraws
+    by the same three, and is the next version under its row key."""
+
+    symbol: str
+    at_ns: int
+    venue_code: str
+    trade_id: str
+    price: Decimal | None
+    quantity: Decimal | None
+    codes: tuple[str, ...]
+    tape: str
+    raw_key: str
+    cancelled: bool = False
+    unconverted: tuple[AsReported, ...] = ()
+
+    @property
+    def row_key(self) -> str:
+        """The trade's identity: the listing, the New York day, the exchange
+        and its trade ID, so its withdrawal finds it."""
+        day = new_york_date(self.at_ns).isoformat()
+        return f"{self.symbol}:t:{day}:{self.venue_code}:{self.trade_id}"
+
+
+@dataclass(frozen=True)
+class SourceQuote:
+    """The best bid and offer as Alpaca states it (`T: q`, or a latest
+    quote): on IEX's feed IEX's own, on SIP's the consolidated best. A side
+    with no price (0) is empty. Sizes are in shares."""
+
+    symbol: str
+    at_ns: int
+    bid: Decimal | None
+    ask: Decimal | None
+    bid_size: Decimal | None
+    ask_size: Decimal | None
+    venue_code: str
+    codes: tuple[str, ...]
+    raw_key: str
+    unconverted: tuple[AsReported, ...] = ()
+
+    @property
+    def row_key(self) -> str:
+        return f"{self.symbol}:q:{self.at_ns}"
+
+
+def _codes(value: object) -> tuple[str, ...]:
+    if isinstance(value, list):
+        return tuple(str(c) for c in value)
+    return ()
+
+
+def trade(item: Mapping[str, Any], symbol: str, raw_key: str) -> SourceTrade | None:
+    """A trade from Alpaca's fields (stream or history); None where its time
+    or its ID is not one."""
+    try:
+        at = parse_time(str(item.get("t")))
+    except ValueError:
+        return None
+    trade_id = str(item.get("i") if item.get("i") is not None else "")
+    if not trade_id:
+        return None
+    values = _Values("trade")
+    return SourceTrade(
+        symbol=symbol,
+        at_ns=at,
+        venue_code=str(item.get("x") or ""),
+        trade_id=trade_id,
+        price=values.number("p", item.get("p"), positive=True),
+        quantity=values.number("s", item.get("s"), positive=True),
+        codes=_codes(item.get("c")),
+        tape=str(item.get("z") or ""),
+        raw_key=raw_key,
+        unconverted=tuple(values.unconverted),
+    )
+
+
+def withdrawal(item: Mapping[str, Any], symbol: str, raw_key: str) -> SourceTrade | None:
+    """A cancel or an error (`T: x`): the trade it names, withdrawn."""
+    stated = trade(item, symbol, raw_key)
+    if stated is None:
+        return None
+    return replace(stated, codes=(), cancelled=True)
+
+
+def correction(item: Mapping[str, Any], symbol: str, raw_key: str) -> list[SourceTrade]:
+    """A correction (`T: c`): the original trade (`oi`, `op`, `os`, `oc`)
+    withdrawn, and the corrected one (`ci`, `cp`, `cs`, `cc`) stated."""
+    out: list[SourceTrade] = []
+    for prefix, cancelled in (("o", True), ("c", False)):
+        part = {
+            "t": item.get("t"),
+            "x": item.get("x"),
+            "z": item.get("z"),
+            "i": item.get(f"{prefix}i"),
+            "p": item.get(f"{prefix}p"),
+            "s": item.get(f"{prefix}s"),
+            "c": item.get(f"{prefix}c"),
+        }
+        made = trade(part, symbol, f"{raw_key}/{prefix}")
+        if made is not None:
+            out.append(replace(made, cancelled=True) if cancelled else made)
+    return out
+
+
+def quote(item: Mapping[str, Any], symbol: str, raw_key: str, feed: str) -> SourceQuote | None:
+    """A quote from Alpaca's fields; its venue IEX's on IEX's feed, none
+    (the consolidated best) on SIP's."""
+    try:
+        at = parse_time(str(item.get("t")))
+    except ValueError:
+        return None
+    values = _Values("quote")
+    sides: dict[str, Decimal | None] = {}
+    for name, price, size in (("bid", "bp", "bs"), ("ask", "ap", "as")):
+        if exact(item.get(price)) == 0:
+            sides[name], sides[f"{name}_size"] = None, None
+            continue
+        sides[name] = values.number(price, item.get(price), positive=True)
+        stated = exact(item.get(size))
+        sides[f"{name}_size"] = (
+            values.number(size, item.get(size), positive=True) if stated != 0 else None
+        )
+    venue = ""
+    if feed == IEX:
+        venue = str(item.get("bx") or item.get("ax") or "")
+    return SourceQuote(
+        symbol=symbol,
+        at_ns=at,
+        bid=sides["bid"],
+        ask=sides["ask"],
+        bid_size=sides["bid_size"],
+        ask_size=sides["ask_size"],
+        venue_code=venue,
+        codes=_codes(item.get("c")),
+        raw_key=raw_key,
+        unconverted=tuple(values.unconverted),
+    )
+
+
+def trades_page(fetched: Fetched) -> Iterator[SourceTrade]:
+    """Every trade of a page of `/v2/stocks/trades`, in Alpaca's order."""
+    trades: Mapping[str, Any] = fetched.value.get("trades") or {}
+    for symbol, items in trades.items():
+        for index, item in enumerate(items or []):
+            made = trade(item, str(symbol), f"{fetched.raw_key}#{symbol}/{index}")
+            if made is not None:
+                yield made
+
+
+def latest_quote_rows(fetched: Fetched) -> Iterator[SourceQuote]:
+    """Each symbol's quote of `/v2/stocks/quotes/latest`, as a quote."""
+    quotes: Mapping[str, Any] = fetched.value.get("quotes") or {}
+    for symbol, item in quotes.items():
+        made = quote(item, str(symbol), f"{fetched.raw_key}#{symbol}", fetched.feed)
+        if made is not None:
+            yield made
+
+
+def streamed(
+    message: Mapping[str, Any], raw_key: str, feed: str
+) -> list[SourceTrade | SourceQuote]:
+    """What one of Alpaca's stream messages states: a trade, a withdrawal, a
+    correction's two halves, or a quote; nothing for any other (a
+    subscription, a status, a bar)."""
+    kind = message.get("T")
+    symbol = spelled(str(message.get("S") or ""))
+    if symbol is None:
+        return []
+    if kind == "t":
+        made = trade(message, symbol, raw_key)
+        return [made] if made is not None else []
+    if kind == "x":
+        withdrawn = withdrawal(message, symbol, raw_key)
+        return [withdrawn] if withdrawn is not None else []
+    if kind == "c":
+        return list(correction(message, symbol, raw_key))
+    if kind == "q":
+        made_quote = quote(message, symbol, raw_key, feed)
+        return [made_quote] if made_quote is not None else []
+    return []

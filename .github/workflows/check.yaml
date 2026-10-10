@@ -8,7 +8,7 @@
 # part of ci-local and so of the pre-push hook, takes the same steps in
 # python:3.12-slim with the same meridian.
 #
-# Until open-meridian 0.22.0 is on PyPI, this job is red on the runner: it
+# Until open-meridian 0.23.0 is on PyPI, this job is red on the runner: it
 # installs the SDK pyproject.toml pins.
 name: check
 

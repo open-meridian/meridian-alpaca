@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alpaca"
-version = "0.2.0"
+version = "0.3.0"
 description = "Alpaca's US equity and ETF market data in an Open Meridian deployment's lake, as a dgm"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
@@ -14,12 +14,13 @@ requires-python = ">=3.11"
 #
 # No third-party dependency: Alpaca's REST is the standard library's, and the
 # New York day is zoneinfo's, on the system's time zone data.
-dependencies = ["open-meridian==0.22.0"]
+dependencies = ["open-meridian==0.23.0"]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.24",
+  "pytest-timeout>=2.3",
   "mypy>=1.11",
   "ruff>=0.6",
 ]
@@ -78,4 +79,6 @@ follow_imports = "skip"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# No test waits on a stream or a socket for ever: one past this fails.
+timeout = 60
 testpaths = ["tests"]

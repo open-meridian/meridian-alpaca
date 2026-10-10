@@ -1,8 +1,9 @@
 """What the plugin records in the lake, and how it answers what the lake wants
-(contract v18, W10; plans/the-lake-prices-the-book, the retail pair).
+(contracts v18 and v19, W10; plans/the-lake-prices-the-book, the retail
+pair).
 
-Two datasets, apart (the plan's Q21), each declared in the catalogue
-(declaration.py):
+Three datasets, apart (the plan's Q21 and Q40), each declared in the
+catalogue (declaration.py):
 
 - **daily**: each listing's close and daily bar for a business date, from
   the source's consolidated daily bars. Pulled: recorded when a reader's read
@@ -10,9 +11,29 @@ Two datasets, apart (the plan's Q21), each declared in the catalogue
   closes of every listing it has served, unasked, so a book valued each
   evening finds them already kept. A day still forming is recorded and
   restated under the same row key as it fills, until final.
-- **live**: the latest trade's price (`last`) and the best bid and ask. Pulled
-  for a read, and kept current at the dataset's cadence while a standing want
-  stands; nothing once it is withdrawn.
+- **live**: the latest trade's price (`last`) and the best bid and ask, as
+  prices, and from contract v19 the best bid and offer as a quote, each side
+  with its size. Pulled for a read; while a standing want stands, its prices
+  kept current at the dataset's cadence and its quotes streamed, at most one
+  a second per listing (the latest); nothing once it is withdrawn.
+- **trades** (contract v19): each trade with the platform's trade
+  attributes, converted from its conditions at the edge (conditions.py), and
+  no aggressor, which Alpaca's stock trades never state; a withdrawal or a
+  correction the next version under the trade's row key. Streamed for the
+  listings under any standing want, and only those (the plan's Q40), in
+  batches of up to 500; pulled for a range a reader wants; and after the
+  stream reconnects, the gap caught up from Alpaca's trade history, a trade
+  already recorded never sent again.
+
+**Each row under its own record's key** (the carried fix for 0.3.0): where
+the deployment holds two records of one listing (one this source resolved,
+one a custodian's, not yet merged), a close, a price, a trade or a quote is
+recorded for each, and a row's key names the record it is about beside what
+the source said (`SPY:1d:2026-10-08@LCL-...`), so the second is never
+recorded under the first's key, which the lake took for a restatement; the
+lake reads a row by its subject, so each record's reads find their own. An
+identical repeat (a day still forming read again unchanged) carries the raw
+record it was first recorded with, so the lake keeps it unchanged.
 
 **Every subject is the deployment's own instrument.** The lake wants
 instruments by the deployment's ID; the plugin asks the instrument store
@@ -45,19 +66,33 @@ import datetime as dt
 import json
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
 import meridian
-from meridian import Bar, Money, ObservationMeta, Price, SourceTime
+from meridian import (
+    Bar,
+    Eligibility,
+    Money,
+    ObservationMeta,
+    Price,
+    Quote,
+    SourceTime,
+    Trade,
+    TradeAttributes,
+)
 from meridian.plugin.v1 import operations_pb2 as ops
 
+from . import conditions
 from .convert import (
     SOURCE,
     DailyBar,
     Quoted,
+    SourceQuote,
+    SourceTrade,
     close_of,
     new_york_date,
     previous_close_of,
@@ -69,9 +104,12 @@ log = logging.getLogger("alpaca.lake")
 
 DAILY = "daily"
 LIVE = "live"
+TRADES = "trades"
 CURRENCY = "USD"
 PRICE = "meridian.v1.Price"
 BAR = "meridian.v1.Bar"
+TRADE = "meridian.v1.Trade"
+QUOTE = "meridian.v1.Quote"
 DAY_NS = 86_400 * NS
 #: The most rows one batch carries (W10.4).
 BATCH = 500
@@ -87,6 +125,14 @@ HISTORY_FROM = dt.date(2016, 1, 1)
 #: A venue the deployment did not hold is asked again after this long.
 VENUE_MISS_NS = 3600 * NS
 LIVE_KINDS = ("last", "bid", "ask")
+#: Streamed trades wait at most this long before they are recorded.
+TRADE_EVERY_NS = NS // 2
+#: A listing's quote is recorded at most once a second: the latest.
+QUOTE_EVERY_NS = NS
+#: How many trades recorded are remembered, so none is sent twice.
+RECENT_TRADES = 50_000
+#: How many rows' last sending is remembered, for an identical repeat.
+REMEMBERED_ROWS = 100_000
 
 
 class Source(Protocol):
@@ -95,6 +141,10 @@ class Source(Protocol):
     def daily(self, symbols: Sequence[str], first: dt.date, last: dt.date) -> list[DailyBar]: ...
 
     def live(self, symbols: Sequence[str]) -> list[Quoted]: ...
+
+    def trades(self, symbols: Sequence[str], start_ns: int, end_ns: int) -> list[SourceTrade]: ...
+
+    def quotes(self, symbols: Sequence[str]) -> list[SourceQuote]: ...
 
 
 @dataclass
@@ -107,18 +157,23 @@ class Counts:
     declined: int = 0
     unconverted: int = 0
     wants: int = 0
+    withdrawn: int = 0
+    caught_up: int = 0
     last_recorded_at_ns: int = 0
     last_declined: str = ""
 
 
 @dataclass
 class Standing:
-    """A standing want on the live dataset, kept current until withdrawn."""
+    """A standing want, kept current until withdrawn: a live one's prices at
+    the cadence, and every one's listings streamed."""
 
     want_id: str
     subjects: tuple[str, ...]
     kinds: tuple[str, ...]
     last_at_ns: int = 0
+    dataset: str = LIVE
+    data_type: str = PRICE
 
 
 @dataclass(frozen=True)
@@ -161,6 +216,26 @@ def _chunks(items: Sequence[Any], size: int = BATCH) -> Iterable[Sequence[Any]]:
         yield items[start : start + size]
 
 
+def row_key(stated: str, entity_id: str) -> str:
+    """A row's key: what the source said, and the record it is about, so two
+    records of one listing are never one row (ObservationMeta.row_key: at
+    most 128 characters)."""
+    return f"{stated}@{entity_id}"[:128]
+
+
+def _eligibility(flags: Sequence[bool | None]) -> Eligibility:
+    """Whether a trade may set each statistic: eligible, not eligible, or
+    unset where a code did not convert (not known)."""
+
+    def one(flag: bool | None) -> str | None:
+        return None if flag is None else ("eligible" if flag else "not_eligible")
+
+    high_low, opening, closing, volume = flags
+    return Eligibility(
+        high_low=one(high_low), open=one(opening), close=one(closing), volume=one(volume)
+    )
+
+
 def _kind_name(value: int) -> str:
     return str(ops.PriceKind.Name(value)).removeprefix("PRICE_KIND_").lower()
 
@@ -180,8 +255,23 @@ class Lake:
         self.source = source
         self.products = products or Products(None)
         self.clock_ns = clock_ns
-        self.counts = {DAILY: Counts(), LIVE: Counts()}
+        self.counts = {DAILY: Counts(), LIVE: Counts(), TRADES: Counts()}
         self.standing: dict[str, Standing] = {}
+        #: What is streamed, and what one session may stream (None: no
+        #: limit); the streamer that streams it, where there is one.
+        self.streamed: list[str] = []
+        self.past_limit: set[str] = set()
+        self.stream_limit: int | None = None
+        self.streamer: Any = None
+        self.pending_trades: list[Trade] = []
+        self.pending_quotes: dict[str, SourceQuote] = {}
+        self._trades_at = 0
+        self._quotes_at = 0
+        #: The trades recorded, by row key, latest last: none sent twice.
+        self.recent: OrderedDict[str, Trade] = OrderedDict()
+        #: Each row's last sending, by (data type, row key): its values
+        #: without the raw record, and the raw record it carried.
+        self._sent: OrderedDict[tuple[str, str, str], tuple[str, Any]] = OrderedDict()
         self.forming: dict[Forming, str] = {}
         self.pushed: dt.date | None = None
         self._venues: dict[str, tuple[str, int]] = {}
@@ -198,6 +288,16 @@ class Lake:
 
     def _key_of(self, dataset: str) -> str:
         return dataset.rpartition(":")[2]
+
+    def streamed_subjects(self, symbol: str) -> list[str]:
+        """The records under a standing want that a streamed listing is: a
+        streamed row is recorded for each."""
+        out: list[str] = []
+        for standing in self.standing.values():
+            for subject in standing.subjects:
+                if self.products.symbols.get(subject) == symbol and subject not in out:
+                    out.append(subject)
+        return out
 
     # ── Subjects and venues (W3.6, W3.1, W3.2, W3.14, W3.15) ─────────────
 
@@ -317,7 +417,7 @@ class Lake:
     def _daily_meta(self, entity_id: str, bar: DailyBar, final: bool) -> ObservationMeta:
         day = bar.business_date
         return ObservationMeta(
-            row_key=bar.row_key,
+            row_key=row_key(bar.row_key, entity_id),
             subjects=[ops.SubjectRef(entity_id=entity_id)],
             source=ops.Source(dataset=self.dataset(DAILY)),
             valid_from_ns=previous_close_of(day),
@@ -363,7 +463,7 @@ class Lake:
         venue, reported = await self.venue_of(quoted.venue_code)
         return Price(
             meta=ObservationMeta(
-                row_key=quoted.row_key,
+                row_key=row_key(quoted.row_key, entity_id),
                 subjects=[ops.SubjectRef(entity_id=entity_id)],
                 source=ops.Source(dataset=self.dataset(LIVE), venue_id=venue),
                 valid_from_ns=quoted.at_ns,
@@ -376,11 +476,33 @@ class Lake:
             basis="per_unit",
         )
 
+    def _as_sent_before(self, data_type: str, row: Any) -> Any:
+        """The row, carrying the raw record it was last sent with where its
+        values are those it was sent with: an identical repeat, which the
+        lake keeps unchanged rather than taking a new raw record for a
+        restatement."""
+        assert row.meta is not None
+        key = (data_type, row.meta.source.dataset, row.meta.row_key)
+        said = repr(replace(row, meta=replace(row.meta, raw=None)))
+        held = self._sent.get(key)
+        if held is not None and held[0] == said:
+            row = replace(row, meta=replace(row.meta, raw=held[1]))
+        self._sent[key] = (said, row.meta.raw)
+        self._sent.move_to_end(key)
+        while len(self._sent) > REMEMBERED_ROWS:
+            self._sent.popitem(last=False)
+        return row
+
     async def _record(self, key: str, data_type: str, rows: Sequence[Any], want_id: str) -> None:
         counts = self.counts[key]
+        rows = [self._as_sent_before(data_type, row) for row in rows]
         for batch in _chunks(rows):
             if data_type == BAR:
                 done = await self.plugin.record_bars(bars=list(batch), want_id=want_id)
+            elif data_type == TRADE:
+                done = await self.plugin.record_trades(trades=list(batch), want_id=want_id)
+            elif data_type == QUOTE:
+                done = await self.plugin.record_quotes(quotes=list(batch), want_id=want_id)
             else:
                 done = await self.plugin.record_prices(prices=list(batch), want_id=want_id)
             counts.recorded += done.recorded
@@ -535,6 +657,7 @@ class Lake:
             kept = [row for row in made if row is not None]
             if not kept:
                 silent.append(subject)
+                continue
             rows.extend(kept)
         if rows:
             await self._record(LIVE, PRICE, rows, want_id)
@@ -570,32 +693,320 @@ class Lake:
                 latest=latest,
             )
             return
+        if key == TRADES:
+            if want.data_type != TRADE:
+                await self._decline(TRADES, want.want_id, subjects, "not_covered")
+                return
+            if want.standing:
+                await self.stand(want, subjects)
+                return
+            await self.trades_between(
+                subjects, want.valid_from_ns, want.valid_until_ns, want.want_id
+            )
+            return
+        if want.data_type == QUOTE:
+            await self.quotes_now(subjects, want.want_id)
+            if want.standing:
+                await self.stand(want, subjects)
+            return
         live_kinds = tuple(k for k in (kinds or LIVE_KINDS) if k in LIVE_KINDS)
         if want.data_type != PRICE or not live_kinds:
             await self._decline(LIVE, want.want_id, subjects, "not_covered")
             return
         await self.live(subjects, live_kinds, want.want_id)
         if want.standing:
-            self.standing[want.want_id] = Standing(
-                want.want_id, tuple(subjects), live_kinds, self.clock_ns()
-            )
+            await self.stand(want, subjects, live_kinds)
 
     async def on_withdrawn(self, heard: meridian.Heard[ops.WantWithdrawnEvent]) -> None:
         """A standing want nobody read within the cadence: no longer kept
-        current."""
+        current, and its listings no longer streamed for it."""
         self.standing.pop(heard.message.want_id, None)
         for forming, want_id in list(self.forming.items()):
             if want_id == heard.message.want_id:
                 self.forming.pop(forming, None)
+        self.restream()
+
+    # ── Streaming (contract v19) ─────────────────────────────────────────
+
+    async def stand(
+        self, want: ops.ObservationsWantedEvent, subjects: Sequence[str], kinds: Sequence[str] = ()
+    ) -> None:
+        """Keep a standing want: its listings streamed from now on, those
+        past what one session may stream declined, not entitled."""
+        key = self._key_of(want.dataset)
+        covered: list[str] = []
+        uncovered: list[str] = []
+        for subject in subjects:
+            (covered if await self.symbol_of(subject) else uncovered).append(subject)
+        if key == TRADES:
+            await self._decline(TRADES, want.want_id, uncovered, "not_covered")
+        self.standing[want.want_id] = Standing(
+            want.want_id,
+            tuple(covered if key == TRADES else subjects),
+            tuple(kinds),
+            self.clock_ns(),
+            dataset=key,
+            data_type=want.data_type,
+        )
+        past = self.restream()
+        over = [s for s in covered if self.products.symbols.get(s) in past]
+        await self._decline(key, want.want_id, over, "not_entitled")
+
+    def restream(self) -> set[str]:
+        """Stream the listings under the standing wants, in the order they
+        were wanted, as many as one session may; the listings past that."""
+        ordered: list[str] = []
+        for standing in self.standing.values():
+            for subject in standing.subjects:
+                symbol = self.products.symbols.get(subject)
+                if symbol and symbol not in ordered:
+                    ordered.append(symbol)
+        limit = self.stream_limit
+        accepted = ordered if limit is None else ordered[:limit]
+        self.streamed = accepted
+        self.past_limit = set(ordered) - set(accepted)
+        if self.streamer is not None:
+            self.streamer.want(accepted)
+        return self.past_limit
+
+    async def heard(self, stated: Sequence[SourceTrade | SourceQuote]) -> None:
+        """What the stream stated: each trade of a listing streamed made a
+        row, waiting to be recorded; each quote kept, the latest a listing's."""
+        streamed = set(self.streamed)
+        for each in stated:
+            if each.symbol not in streamed:
+                continue
+            if isinstance(each, SourceQuote):
+                self.pending_quotes[each.symbol] = each
+                continue
+            for subject in self.streamed_subjects(each.symbol):
+                row = await self.trade_row(each, subject)
+                if row is not None:
+                    self.pending_trades.append(row)
+
+    async def flush(self, force: bool = False) -> None:
+        """Record what the stream stated, when it is due: trades every half
+        second or 500 at a time, quotes once a second."""
+        now = self.clock_ns()
+        due = force or len(self.pending_trades) >= BATCH or now - self._trades_at >= TRADE_EVERY_NS
+        if self.pending_trades and due:
+            rows, self.pending_trades = self.pending_trades, []
+            self._trades_at = now
+            await self._record_trades(rows, "")
+        if self.pending_quotes and (force or now - self._quotes_at >= QUOTE_EVERY_NS):
+            quotes, self.pending_quotes = list(self.pending_quotes.values()), {}
+            self._quotes_at = now
+            made = [
+                row
+                for q in quotes
+                for subject in self.streamed_subjects(q.symbol)
+                if (row := await self.quote_row(q, subject)) is not None
+            ]
+            if made:
+                await self._record(LIVE, QUOTE, made, "")
+
+    async def caught_up(self, since: dict[str, int]) -> int:
+        """After the stream reconnected: the trades since the last heard of
+        each listing streamed, from Alpaca's trade history; those already
+        recorded are not sent again. How many were recorded."""
+        symbols = sorted(s for s in since if s in set(self.streamed))
+        if not symbols or self.source is None:
+            return 0
+        source, start, end = self.source, min(since[s] for s in symbols), self.clock_ns()
+        found = await self._fetch(lambda: source.trades(symbols, start, end))
+        if not found:
+            return 0
+        rows = [
+            row
+            for t in found
+            if t.at_ns >= since[t.symbol]
+            for subject in self.streamed_subjects(t.symbol)
+            if (row := await self.trade_row(t, subject)) is not None
+        ]
+        before = self.counts[TRADES].recorded
+        await self._record_trades(rows, "")
+        caught = self.counts[TRADES].recorded - before
+        self.counts[TRADES].caught_up += caught
+        return caught
+
+    async def trades_between(
+        self, subjects: Sequence[str], from_ns: int, until_ns: int, want_id: str = ""
+    ) -> list[str]:
+        """Record the trades of `subjects` over a range a reader wants, from
+        Alpaca's trade history; the subjects it had nothing for."""
+        symbols: dict[str, str] = {}
+        uncovered: list[str] = []
+        for subject in subjects:
+            symbol = await self.symbol_of(subject)
+            if symbol is None:
+                uncovered.append(subject)
+            else:
+                symbols[subject] = symbol
+        await self._decline(TRADES, want_id, uncovered, "not_covered")
+        now = self.clock_ns()
+        if not symbols or self.source is None or not from_ns or from_ns >= now:
+            await self._decline(TRADES, want_id, list(symbols), "source_silent")
+            return list(symbols)
+        source, wanted = self.source, sorted(set(symbols.values()))
+        end = min(until_ns or now, now)
+        found = await self._fetch(lambda: source.trades(wanted, from_ns, end))
+        if found is None:
+            await self._decline(TRADES, want_id, list(symbols), "source_silent")
+            return list(symbols)
+        rows = [
+            row
+            for t in found
+            for subject, symbol in symbols.items()
+            if symbol == t.symbol and (row := await self.trade_row(t, subject)) is not None
+        ]
+        held = {t.symbol for t in found}
+        silent = [s for s, symbol in symbols.items() if symbol not in held]
+        if rows:
+            await self._record_trades(rows, want_id)
+        await self._decline(TRADES, want_id, silent, "source_silent")
+        return silent
+
+    async def quotes_now(self, subjects: Sequence[str], want_id: str = "") -> list[str]:
+        """Record the latest quote of `subjects`, from Alpaca's latest quotes;
+        the subjects it had nothing for."""
+        symbols: dict[str, str] = {}
+        uncovered: list[str] = []
+        for subject in subjects:
+            symbol = await self.symbol_of(subject)
+            if symbol is None:
+                uncovered.append(subject)
+            else:
+                symbols[subject] = symbol
+        await self._decline(LIVE, want_id, uncovered, "not_covered")
+        if not symbols or self.source is None:
+            await self._decline(LIVE, want_id, list(symbols), "source_silent")
+            return list(symbols)
+        source, wanted = self.source, sorted(set(symbols.values()))
+        found = await self._fetch(lambda: source.quotes(wanted))
+        if found is None:
+            await self._decline(LIVE, want_id, list(symbols), "source_silent")
+            return list(symbols)
+        rows = [
+            row
+            for q in found
+            for subject, symbol in symbols.items()
+            if symbol == q.symbol and (row := await self.quote_row(q, subject)) is not None
+        ]
+        held = {q.symbol for q in found}
+        silent = [s for s, symbol in symbols.items() if symbol not in held]
+        if rows:
+            await self._record(LIVE, QUOTE, rows, want_id)
+        await self._decline(LIVE, want_id, silent, "source_silent")
+        return silent
+
+    async def trade_row(self, stated: SourceTrade, subject: str) -> Trade | None:
+        """A trade as recorded for one record of its listing: the venue it printed
+        on, its price and size, its attributes from its conditions, and no
+        aggressor, which Alpaca's stock trades never state. A withdrawal of a
+        trade recorded is that trade again, withdrawn."""
+        counts = self.counts[TRADES]
+        key = row_key(stated.row_key, subject)
+        if stated.cancelled:
+            pending = [t for t in self.pending_trades if t.meta and t.meta.row_key == key]
+            held = pending[-1] if pending else self.recent.get(key)
+            if held is not None and held.meta is not None and not held.cancelled:
+                raw = self.plugin.raw_record(stated.raw_key[:256])
+                return replace(held, cancelled=True, meta=replace(held.meta, raw=raw))
+        if stated.price is None or stated.quantity is None:
+            counts.unconverted += len(stated.unconverted) or 1
+            return None
+        venue, reported = await self.venue_of(stated.venue_code)
+        if stated.cancelled:
+            # A withdrawal of a trade not recorded here: its conditions are
+            # not stated again, so what it could set is not known.
+            said = conditions.Attributes((), conditions.NOT_KNOWN, conditions.NOT_KNOWN)
+        else:
+            said = conditions.trade_attributes(stated.codes, stated.tape)
+        counts.unconverted += len(said.unconverted)
+        return Trade(
+            meta=ObservationMeta(
+                row_key=key,
+                subjects=[ops.SubjectRef(entity_id=subject)],
+                source=ops.Source(dataset=self.dataset(TRADES), venue_id=venue),
+                valid_from_ns=stated.at_ns,
+                source_times=[SourceTime(kind="event", at_ns=stated.at_ns)],
+                raw=self.plugin.raw_record(stated.raw_key[:256]),
+                unconverted=[*reported, *said.unconverted, *stated.unconverted],
+            ),
+            price=Money(stated.price, CURRENCY),
+            quantity=stated.quantity,
+            attributes=TradeAttributes(
+                consolidated=_eligibility(said.consolidated),
+                market_centre=_eligibility(said.market_centre),
+                characteristics=list(said.characteristics),
+            ),
+            cancelled=stated.cancelled,
+        )
+
+    async def quote_row(self, stated: SourceQuote, subject: str) -> Quote | None:
+        """A quote as recorded for one record of its listing: IEX's venue on IEX's
+        feed (the consolidated best names none), each side unset where it is
+        empty, its sizes in shares."""
+        if stated.bid is None and stated.ask is None:
+            if stated.unconverted:
+                self.counts[LIVE].unconverted += len(stated.unconverted)
+            return None
+        venue, reported = await self.venue_of(stated.venue_code)
+        characteristics, unread = conditions.quote_characteristics(stated.codes)
+        self.counts[LIVE].unconverted += len(stated.unconverted)
+        return Quote(
+            meta=ObservationMeta(
+                row_key=row_key(stated.row_key, subject),
+                subjects=[ops.SubjectRef(entity_id=subject)],
+                source=ops.Source(dataset=self.dataset(LIVE), venue_id=venue),
+                valid_from_ns=stated.at_ns,
+                source_times=[SourceTime(kind="event", at_ns=stated.at_ns)],
+                raw=self.plugin.raw_record(stated.raw_key[:256]),
+                unconverted=[*reported, *unread, *stated.unconverted],
+            ),
+            bid=None if stated.bid is None else Money(stated.bid, CURRENCY),
+            ask=None if stated.ask is None else Money(stated.ask, CURRENCY),
+            bid_quantity=stated.bid_size if stated.bid is not None else None,
+            ask_quantity=stated.ask_size if stated.ask is not None else None,
+            characteristics=list(characteristics),
+        )
+
+    async def _record_trades(self, rows: Sequence[Trade], want_id: str) -> None:
+        """Record trades, none twice: a trade recorded already, or a
+        withdrawal already recorded, is left out."""
+        counts = self.counts[TRADES]
+        fresh: list[Trade] = []
+        seen: dict[str, Trade] = {}
+        for row in rows:
+            assert row.meta is not None
+            key = row.meta.row_key
+            held = seen.get(key) or self.recent.get(key)
+            if held is not None and held.cancelled == row.cancelled:
+                counts.unchanged += 1
+                continue
+            fresh.append(row)
+            seen[key] = row
+        if not fresh:
+            return
+        await self._record(TRADES, TRADE, fresh, want_id)
+        for key, row in seen.items():
+            self.recent[key] = row
+            self.recent.move_to_end(key)
+        counts.withdrawn += sum(1 for row in fresh if row.cancelled)
+        while len(self.recent) > RECENT_TRADES:
+            self.recent.popitem(last=False)
 
     # ── The timetable ────────────────────────────────────────────────────
 
     async def tick(self) -> None:
-        """What is due now: each standing want kept current at the live
-        cadence; each day still forming read again; and, once a session's
-        close is final, the day's closes of every listing served, pushed."""
+        """What is due now: each standing want of live prices kept current at
+        the live cadence (quotes and trades are streamed); each day still
+        forming read again; and, once a session's close is final, the day's
+        closes of every listing served, pushed."""
         now = self.clock_ns()
         for standing in list(self.standing.values()):
+            if standing.dataset != LIVE or standing.data_type != PRICE:
+                continue  # streamed, not asked again
             if now - standing.last_at_ns >= LIVE_CADENCE_SECONDS * NS:
                 standing.last_at_ns = now
                 await self.live(standing.subjects, standing.kinds, standing.want_id)
