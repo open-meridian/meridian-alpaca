@@ -25,11 +25,15 @@ OTHER = "snaptrade"
 
 #: The deployment's records, as ResolveInstrument answers them: SPY with this
 #: source's symbol, BRK.B and TQQQ with another source's (BRK.B in its
-#: spelling), and one record with no symbol at all.
+#: spelling; TQQQ as a custodian's book holds it, beside its CUSIP), and one
+#: record with no symbol at all.
 RECORDS: dict[str, list[ops.Identifier]] = {
     SPY: [ops.Identifier(scheme="symbol", value="SPY", source="alpaca")],
     BRK: [ops.Identifier(scheme="symbol", value="BRK/B", source=OTHER)],
-    TQQQ: [ops.Identifier(scheme="symbol", value="TQQQ", source=OTHER)],
+    TQQQ: [
+        ops.Identifier(scheme="cusip", value="74347X831"),
+        ops.Identifier(scheme="symbol", value="TQQQ", source=OTHER),
+    ],
     ISIN_ONLY: [ops.Identifier(scheme="isin", value="US0000000001")],
 }
 

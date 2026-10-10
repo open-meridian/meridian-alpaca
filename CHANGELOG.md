@@ -10,6 +10,9 @@
 - Wants answered or declined per subject; a forming day restated under one
   row key until final; listings resolved by Alpaca's symbol, venues by
   Alpaca's exchange letter, misses reported.
+- An instrument the book holds from another source, known only by that
+  source's identifiers (a custodian's symbol and CUSIP), read from its
+  record and priced under Alpaca's symbol.
 - Connection and Datasets under Manage, each a read tool
   (`read_connection`, `read_datasets`).
 - The SDK's `dgm` suite, unchanged; an e2e on core's plugin harness with the

@@ -28,11 +28,12 @@ MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\
 
 # The released runtime `make e2e` proves the plugin against, by tag and
 # digest, and core's plugin harness published with it, by the same commit's
-# tag and its digest: core b1b8420, the lake built (contract v18). Moved
+# tag and its digest: core e4a14fc, a dgm reading an instrument's record
+# (contract v18, ruled 2026-10-10). Moved
 # together by a deliberate commit, and with the SDK when a contract version
 # changes. e2e-latest.yaml tries the runtime and harness tagged latest weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:b1b8420@sha256:422a28cec7ba6b3856ac43b9871cea9fbc74f69ea86ce5737ee49f4c29dcc77a
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:b1b8420@sha256:e03b0f06c273504ca8c2e893c8279b6ac3d91ee9b67ead9de28b35c760e731c3
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:e4a14fc@sha256:44c919b2d0d67fd873ea4829643f029bacca691ae0c2e85246bfc920a27850b3
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:e4a14fc@sha256:c1d816676ae2163cf03fa984f82105353f29921d2aca823e7eb7b5717e86b7ab
 # A developer's own recording of Alpaca's responses, for `make e2e-recorded`:
 # a directory holding exchange.json, never committed.
 RECORDED    ?=

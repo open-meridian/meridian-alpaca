@@ -16,7 +16,9 @@ Two datasets, apart (the plan's Q21), each declared in the catalogue
 
 **Every subject is the deployment's own instrument.** The lake wants
 instruments by the deployment's ID; the plugin asks the instrument store
-what the record is (W3.6) and takes the listing's symbol from its
+what the record is (W3.6, a dgm's from contract v18 as ruled 2026-10-10)
+-- the book's instruments came from a custodian, known by its identifiers
+-- and takes the listing's symbol from its
 identifiers: the one this source reported (`symbol` at this source) where it
 has one, else a `symbol` another source reported, in this source's one
 spelling of a share class. Using another source's symbol, it reports its own
@@ -212,9 +214,10 @@ class Lake:
                 instrument_id=entity_id, as_of_ns=self.clock_ns()
             )
         except meridian.NotGranted:
-            # Contract v18 grants a dgm no read of what an instrument is
-            # (W3.6): a subject it did not resolve itself is not one it can
-            # name to its source. Asked once, and said on the Datasets page.
+            # A runtime from before the ruling of 2026-10-10 grants a dgm no
+            # read of what an instrument is (W3.6): a subject it did not
+            # resolve itself is not one it can name to its source. Asked
+            # once, and said on the Datasets page.
             log.warning("this dgm may not read an instrument's record; serving its own")
             self.reads_instruments = False
             return None

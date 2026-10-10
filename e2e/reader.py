@@ -3,8 +3,9 @@ reporting plugin valuing a book), run from the plugin's own image with this
 file mounted, on the SDK alone. It holds `custody` beside `reporting` only
 so that it can name the instruments it asks about as a custodian's book
 would, by resolving their identifiers (W3.1): SPY and BRK.B by Alpaca's own
-symbols, and TQQQ by another source's symbol alone, a record Alpaca's plugin
-cannot name to Alpaca while a dgm may not read an instrument's record.
+symbols, and TQQQ as a custodian's book holds it, by its CUSIP and the
+custodian's symbol alone, a record Alpaca's plugin names to Alpaca by
+reading it (W3.6, a dgm's from contract v18 as ruled 2026-10-10).
 
 Its page answers JSON, for the harness's runner (`page --instance reader
 --level read PATH`):
@@ -33,7 +34,10 @@ LOOP = asyncio.new_event_loop()
 ASKED = {
     "spy": [ops.Identifier(scheme="symbol", value="SPY", source="alpaca")],
     "brk": [ops.Identifier(scheme="symbol", value="BRK.B", source="alpaca")],
-    "other": [ops.Identifier(scheme="symbol", value="TQQQ", source="e2e-custodian")],
+    "other": [
+        ops.Identifier(scheme="cusip", value="74347X831"),
+        ops.Identifier(scheme="symbol", value="TQQQ", source="e2e-custodian"),
+    ],
 }
 
 

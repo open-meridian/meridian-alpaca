@@ -137,6 +137,11 @@ def producers(tmp: Path) -> dict[str, Producer]:
     async def recorded_against(recorder: Recorder) -> None:
         await wanted(recorder, want(SPY, business_date=DAY))
 
+    async def elsewhere(recorder: Recorder) -> None:
+        # TQQQ as a custodian's book holds it, by its CUSIP and the
+        # custodian's symbol: the record read (W3.6), Alpaca's symbol found.
+        await wanted(recorder, want(TQQQ, business_date=DAY))
+
     async def declined(recorder: Recorder) -> None:
         await wanted(recorder, want(ISIN_ONLY, business_date=DAY))
 
@@ -164,6 +169,7 @@ def producers(tmp: Path) -> dict[str, Producer]:
         "a-venue-resolved": venue,
         "a-venue-not-held": venue_not_held,
         "a-want-recorded-against": recorded_against,
+        "a-subject-another-source-resolved": elsewhere,
         "a-subject-declined": declined,
         "a-standing-want-withdrawn": withdrawn,
     }
@@ -191,7 +197,7 @@ def _row(held, subject: str, money: Money) -> Price:  # type: ignore[no-untyped-
 def test_the_dgm_suite_passes_unchanged(tmp_path: Path) -> None:
     report = run("dgm", producers(tmp_path))
     assert report.passed, report.failures
-    assert len(report.passed_cases) == 12
+    assert len(report.passed_cases) == 13
 
 
 def test_a_price_read_through_a_float_fails_the_suite(tmp_path: Path, restore_parse: None) -> None:

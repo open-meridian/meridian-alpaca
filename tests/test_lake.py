@@ -278,9 +278,39 @@ async def test_a_source_that_fails_is_said_and_its_subjects_silent(tmp_path: Pat
     assert "no route to host" in lake.last_error
 
 
+async def test_a_book_instrument_known_only_by_another_sources_identifiers_is_priced(
+    tmp_path: Path,
+) -> None:
+    # Contract v18 as ruled 2026-10-10: a dgm reads an instrument's record
+    # (W3.6). TQQQ is known to the deployment only as a custodian's book
+    # holds it -- its CUSIP and the custodian's symbol -- and the lake wants
+    # its close: the plugin reads the record, finds the listing, joins its
+    # own symbol to the record (W3.1) and records the close against the want.
+    recorder, lake, _ = made(tmp_path)
+    recorder.answer("ObservationsWanted", lambda _: want(TQQQ, business_date="2026-10-08"))
+    await recorder.receive(observations_wanted=lake.on_want)
+    (read,) = on(recorder, "ResolveInstrument")
+    assert read.instrument_id == TQQQ and read.as_of_ns > 0
+    (joined,) = on(recorder, "ResolveIdentifier")
+    assert [(i.scheme, i.value, i.source) for i in joined.identifiers] == [
+        ("symbol", "TQQQ", "alpaca"),
+        ("symbol", "TQQQ", "snaptrade"),
+    ]
+    assert not on(recorder, "ReportMissingInstrument") and not on(recorder, "DeclineWant")
+    (sent,) = on(recorder, "RecordPrices")
+    assert sent.want_id == "WNT-1"
+    (price,) = sent.prices
+    assert [s.entity_id for s in price.meta.subjects] == [TQQQ]
+    assert as_decimal(price.price.amount) == Decimal("82.37")
+    assert price.meta.row_key == "TQQQ:1d:2026-10-08"
+    assert lake.products.symbols[TQQQ] == "TQQQ" and lake.reads_instruments
+
+
 async def test_with_no_read_of_an_instrument_its_own_listings_alone_are_served(
     tmp_path: Path,
 ) -> None:
+    # On a runtime from before the ruling of 2026-10-10, which grants a dgm
+    # no read of an instrument's record.
     import meridian
 
     recorder, lake, _ = made(tmp_path)
