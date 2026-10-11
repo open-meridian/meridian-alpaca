@@ -6,7 +6,7 @@ quotes, and trades, put into the deployment's lake for the plugins that
 value and show a book.
 
 It is the first half of the retail pair, beside
-[meridian-tradier](https://github.com/open-meridian/meridian-tradier): both
+[meridian-tradier](https://github.com/open-meridian/plugin-tradier): both
 pass the same suite of the SDK, unchanged. Alpaca is also a broker; this
 repository is named for the vendor so that a `custody` or `connectivity` role can
 arrive here later without a rename.
