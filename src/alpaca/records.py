@@ -1,11 +1,16 @@
 """What the pages' read tools answer (contract v12's parity: a page and its tool
-read one source, `pages.answer`). Configuration and the plugin's own work
-only: never a price, which is the reading roles' to read under their
-entitlement, and never a key, of which only whether each part is set."""
+read one source, `pages.answer`): the data role's common records
+(`meridian.roles.data`, spec/plugin-pages-follow-their-role), each extended
+with Alpaca's own fields beside the common ones. Configuration and the
+plugin's own work only: never a price, which is the reading roles' to read
+under their entitlement, and never a key, of which only whether each part
+is set."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from meridian.roles import data
 
 
 @dataclass(frozen=True)
@@ -22,7 +27,8 @@ class SessionRead:
     """The stream: its state (idle, connecting, streaming, waiting, refused,
     no key), the feed, how many listings it streams of how many it may,
     the sessions opened and reopened, the messages heard, the trades caught
-    up after a reconnect, and the last message and error. Never a key."""
+    up after a reconnect or a restart, and the last message and error.
+    Never a key."""
 
     state: str
     feed: str = ""
@@ -38,84 +44,57 @@ class SessionRead:
 
 
 @dataclass(frozen=True)
-class ConnectionRead:
-    """The plugin's connection to Alpaca: whether the key is set and answers,
-    the feeds it is entitled to and which each dataset uses, the vendor's
-    limits and what this process has spent of them, and its stream's
-    session."""
+class ConnectionRead(data.ConnectionRead):
+    """Connection's common fields, then Alpaca's: what the mode means now,
+    what the key is not entitled to, each feed and whether the key answered
+    for it, the feed each dataset reads, the last call's HTTP status, and
+    the stream's session."""
 
-    mode: str
-    key_id_set: bool
-    secret_key_set: bool
-    answered: bool
-    detail: str
+    detail: str = ""
+    not_entitled: str = ""
     feeds: list[FeedRead] = field(default_factory=list)
     daily_feed: str = ""
     live_feed: str = ""
-    limit_per_minute: int = 0
-    vendor_limit_per_minute: int = 0
-    calls: int = 0
-    rate_limited: int = 0
-    last_call_at: str = ""
     last_status: int = 0
-    last_error: str = ""
-    sessions: list[SessionRead] = field(default_factory=list)
+    stream: SessionRead | None = None
 
 
 @dataclass(frozen=True)
-class DatasetRead:
-    """One dataset the plugin serves, its catalogue entry and its work."""
+class Served(data.Served):
+    """One dataset as "Served" shows it, then Alpaca's: its key, the feed it
+    reads, and what it restated, kept unchanged, could not convert, and
+    caught up since the plugin started."""
 
-    dataset: str
-    key: str
-    serves: str
-    feed: str
-    modes: list[str] = field(default_factory=list)
-    cadence_seconds: int = 0
-    kept_by_default: bool = False
-    kept_days: int = 0
-    personal_use: bool = True
-    entitled: bool = False
-    recorded: int = 0
+    key: str = ""
+    feed: str = ""
     restated: int = 0
     unchanged: int = 0
-    declined: int = 0
     unconverted: int = 0
-    wants: int = 0
-    withdrawn: int = 0
     caught_up: int = 0
-    last_recorded_at: str = ""
 
 
 @dataclass(frozen=True)
-class StandingRead:
-    """A standing want the plugin keeps current: what it asks (prices of
-    some kinds, quotes or trades), its listings, whether they are streamed,
-    and when its prices were last kept."""
+class Want(data.Want):
+    """One standing want as "Wants" shows it, then Alpaca's: its ID, the
+    listings it names, and whether they are streamed."""
 
-    want_id: str
-    dataset: str
-    subjects: int
-    symbols: list[str] = field(default_factory=list)
-    kinds: list[str] = field(default_factory=list)
-    asks: str = ""
+    want_id: str = ""
+    listings: list[str] = field(default_factory=list)
     streamed: bool = False
-    last_kept_at: str = ""
 
 
 @dataclass(frozen=True)
-class DatasetsRead:
-    """What the plugin serves: each dataset, the standing wants it keeps
-    current, how many listings it knows, the days still forming, and
-    whether the deployment lets it read an instrument's record (W3.6), without
-    which it serves only the listings it resolved itself; and how many
-    listings are streamed, and how many more were wanted than one session
-    may stream."""
+class DatasetsRead(data.DatasetsRead):
+    """Datasets' common fields, then Alpaca's: the listings it knows, the
+    days still forming, the listings streamed and those wanted past what
+    one session may stream, and the subjects declined today because Alpaca
+    has nothing for them (each once for the date, not each minute). Its
+    rows are Alpaca's, each extending the role's."""
 
-    datasets: list[DatasetRead] = field(default_factory=list)
-    standing: list[StandingRead] = field(default_factory=list)
+    served: list[Served] = field(default_factory=list)  # type: ignore[assignment]
+    wants: list[Want] = field(default_factory=list)  # type: ignore[assignment]
     listings: int = 0
     forming: int = 0
-    reads_instruments: bool = True
     streamed: int = 0
     past_limit: int = 0
+    declined_today: int = 0

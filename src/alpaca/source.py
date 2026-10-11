@@ -5,18 +5,25 @@ restricted 15 minutes; live prices, quotes and a range of trades from SIP
 where the key has it in real time, else from IEX, the one exchange a free
 account sees, each row naming the exchange it is from. Which feeds the key
 is entitled to is asked once, and again when the key changes; the
-Connection page shows the answer.
+Connection page shows the answer. Should SIP refuse a live call the key was
+taken to have (403), the key is taken not to have SIP in real time from then
+on, and the call asked again of IEX: latest quotes and trades come from the
+feed the key is entitled to, never SIP's on a free or a paper key.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import replace
+from typing import TypeVar
 
 from . import convert
 from .convert import DailyBar, Quoted, SourceQuote, SourceTrade
-from .vendor import IEX, SIP, SYMBOLS_PER_CALL, Alpaca, Entitlements
+from .vendor import IEX, SIP, SYMBOLS_PER_CALL, Alpaca, Entitlements, VendorError
+
+T = TypeVar("T")
 
 
 class AlpacaSource:
@@ -57,30 +64,52 @@ class AlpacaSource:
         time, else IEX (synthetic: IEX)."""
         return IEX if self.synthetic else self.entitlements().live_feed
 
+    def _on_live_feed(self, ask: Callable[[str], T]) -> T:
+        """`ask` of the live feed; where SIP refuses it (403), the key is
+        taken not to have SIP in real time, and it is asked of IEX."""
+        feed = self.live_feed
+        try:
+            return ask(feed)
+        except VendorError as refused:
+            if feed != SIP or refused.status != 403:
+                raise
+        with self._lock:
+            if self._entitled is not None:
+                self._entitled = replace(self._entitled, sip_live=False)
+        return ask(IEX)
+
     def trades(self, symbols: Sequence[str], start_ns: int, end_ns: int) -> list[SourceTrade]:
         """The trades from `start_ns` to `end_ns`, from the live feed."""
-        feed = self.live_feed
-        trades: list[SourceTrade] = []
-        for start in range(0, len(symbols), SYMBOLS_PER_CALL):
-            chunk = symbols[start : start + SYMBOLS_PER_CALL]
-            for page in self.alpaca.trades(chunk, start_ns, end_ns, feed):
-                trades.extend(convert.trades_page(page))
-        return trades
+
+        def ask(feed: str) -> list[SourceTrade]:
+            trades: list[SourceTrade] = []
+            for start in range(0, len(symbols), SYMBOLS_PER_CALL):
+                chunk = symbols[start : start + SYMBOLS_PER_CALL]
+                for page in self.alpaca.trades(chunk, start_ns, end_ns, feed):
+                    trades.extend(convert.trades_page(page))
+            return trades
+
+        return self._on_live_feed(ask)
 
     def quotes(self, symbols: Sequence[str]) -> list[SourceQuote]:
         """The latest best bid and offer of each listing, from the live feed."""
-        feed = self.live_feed
-        quotes: list[SourceQuote] = []
-        for start in range(0, len(symbols), SYMBOLS_PER_CALL):
-            chunk = symbols[start : start + SYMBOLS_PER_CALL]
-            quotes.extend(convert.latest_quote_rows(self.alpaca.latest_quotes(chunk, feed)))
-        return quotes
+
+        def ask(feed: str) -> list[SourceQuote]:
+            quotes: list[SourceQuote] = []
+            for start in range(0, len(symbols), SYMBOLS_PER_CALL):
+                chunk = symbols[start : start + SYMBOLS_PER_CALL]
+                quotes.extend(convert.latest_quote_rows(self.alpaca.latest_quotes(chunk, feed)))
+            return quotes
+
+        return self._on_live_feed(ask)
 
     def live(self, symbols: Sequence[str]) -> list[Quoted]:
-        feed = self.live_feed
-        quoted: list[Quoted] = []
-        for start in range(0, len(symbols), SYMBOLS_PER_CALL):
-            chunk = symbols[start : start + SYMBOLS_PER_CALL]
-            quoted.extend(convert.latest_trades(self.alpaca.latest_trades(chunk, feed)))
-            quoted.extend(convert.latest_quotes(self.alpaca.latest_quotes(chunk, feed)))
-        return quoted
+        def ask(feed: str) -> list[Quoted]:
+            quoted: list[Quoted] = []
+            for start in range(0, len(symbols), SYMBOLS_PER_CALL):
+                chunk = symbols[start : start + SYMBOLS_PER_CALL]
+                quoted.extend(convert.latest_trades(self.alpaca.latest_trades(chunk, feed)))
+                quoted.extend(convert.latest_quotes(self.alpaca.latest_quotes(chunk, feed)))
+            return quoted
+
+        return self._on_live_feed(ask)

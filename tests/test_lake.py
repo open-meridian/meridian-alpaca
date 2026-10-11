@@ -287,7 +287,7 @@ async def test_a_source_that_fails_is_said_and_its_subjects_silent(tmp_path: Pat
 async def test_a_book_instrument_known_only_by_another_sources_identifiers_is_priced(
     tmp_path: Path,
 ) -> None:
-    # Contract v18 as ruled 2026-10-10: a dgm reads an instrument's record
+    # Contract v18 as ruled 2026-10-10: a data plugin reads an instrument's record
     # (W3.6). TQQQ is known to the deployment only as a custodian's book
     # holds it -- its CUSIP and the custodian's symbol -- and the lake wants
     # its close: the plugin reads the record, finds the listing, joins its
@@ -315,7 +315,7 @@ async def test_a_book_instrument_known_only_by_another_sources_identifiers_is_pr
 async def test_with_no_read_of_an_instrument_its_own_listings_alone_are_served(
     tmp_path: Path,
 ) -> None:
-    # On a runtime from before the ruling of 2026-10-10, which grants a dgm
+    # On a runtime from before the ruling of 2026-10-10, which grants a data plugin
     # no read of an instrument's record.
     import meridian
 
@@ -323,7 +323,7 @@ async def test_with_no_read_of_an_instrument_its_own_listings_alone_are_served(
 
     def refused(_: Any) -> Any:
         raise meridian.NotGranted(
-            "platform.reference.query.resolve-instrument", "this plugin holds dgm"
+            "platform.reference.query.resolve-instrument", "this plugin holds data"
         )
 
     recorder.answer("ResolveInstrument", refused)
@@ -346,3 +346,66 @@ async def test_a_listing_that_does_not_resolve_is_reported_and_not_kept(tmp_path
     (missed,) = on(recorder, "ReportMissingInstrument")
     assert missed.reason == ops.MISS_REASON_AMBIGUOUS and missed.source == "alpaca"
     assert lake.products.symbols == {}
+
+
+#: A plan fund a custodian names by a symbol Alpaca has nothing for.
+TCH4 = "LCL-TCH4"
+WITH_TCH4 = {**RECORDS, TCH4: [ops.Identifier(scheme="symbol", value="TCH4", source="snaptrade")]}
+
+
+async def test_an_unknown_symbol_is_declined_once_for_the_date(tmp_path: Path) -> None:
+    """TCH4, which Alpaca has nothing for, under a standing want of live prices:
+    declined once for the day, not again each minute the want is kept current
+    or the lake delivers it again; the next day, once more."""
+    recorder = Recorder("alpaca-1")
+    answer_records(recorder, WITH_TCH4)
+    clock = Clock(at("2026-10-09", 11))
+    lake = synthetic_lake(recorder, clock, tmp_path)
+    event = want(SPY, TCH4, dataset="suite-plugin:live", standing=True)
+    recorder.answer("ObservationsWanted", lambda _: event)
+    for minute in range(5):
+        clock.now = at("2026-10-09", 11, minute)
+        await recorder.receive(observations_wanted=lake.on_want)
+        await lake.tick()
+    declined = [s.entity_id for d in on(recorder, "DeclineWant") for s in d.subjects]
+    assert declined == [TCH4]
+    asked = lake.source.alpaca.transport.asked  # type: ignore[union-attr]
+    # Asked once (its latest trade and quote), never again that day.
+    assert sum("TCH4" in url for url in asked) == 2
+    clock.now = at("2026-10-12", 11)
+    await lake.tick()
+    declined = [s.entity_id for d in on(recorder, "DeclineWant") for s in d.subjects]
+    assert declined == [TCH4, TCH4]
+
+
+async def test_a_source_that_fails_is_asked_again(tmp_path: Path) -> None:
+    """A decline because the source failed is not settled for the date."""
+    recorder, lake, clock = made(tmp_path, at("2026-10-09", 11))
+
+    def failing(*_: object) -> list[Any]:
+        raise OSError("down")
+
+    lake.source.live = failing  # type: ignore[union-attr, method-assign]
+    await lake.live([SPY], want_id="WNT-1")
+    await lake.live([SPY], want_id="WNT-1")
+    assert len(on(recorder, "DeclineWant")) == 2
+
+
+async def test_a_restarts_gap_is_backfilled_once_and_two_days_back_at_most(
+    tmp_path: Path,
+) -> None:
+    recorder, lake, clock = made(tmp_path, at("2026-10-09", 16, 5))
+    last = ops.Trade(
+        meta=ops.ObservationMeta(
+            subjects=[ops.SubjectRef(entity_id=SPY)], valid_from_ns=at("2026-10-01", 10)
+        )
+    )
+    recorder.answer("ListTrades", lambda _: ops.ListTradesResult(trades=[last]))
+    lake.products.put(SPY, "SPY")
+    assert await lake.backfill([SPY]) == 2
+    asked = lake.source.alpaca.transport.asked  # type: ignore[union-attr]
+    (history,) = [url for url in asked if "/v2/stocks/trades?" in url]
+    assert "start=2026-10-07T20" in history  # two days back, not 2026-10-01
+    assert await lake.backfill([SPY]) == 0  # once a process
+    assert all(read.latest_recorded for read in on(recorder, "ListTrades"))
+    assert lake.counts["trades"].caught_up == 2

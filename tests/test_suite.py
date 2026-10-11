@@ -1,20 +1,16 @@
-"""The `dgm` suite, the SDK's own (meridian.suites, contract v19), run unchanged
+"""The data suite, the SDK's own (meridian.suites, contract v20), run unchanged
 against this plugin: every case mapped to the plugin's own conversion, from
-Alpaca's synthetic exchange and stream, through the lake's half it runs in
+Alpaca's recorded exchange and stream, through the lake's half it runs in
 production (lake.py), against the suite's `Recorder`.
 
-Four cases are not presented, each with why (`NOT_PRESENTED`), as the suite
-lets a case about a kind of data (`about`) go unpresented from contract
-v19. Two are about kinds Alpaca's US stock data never publishes: a
-currency's rate against another currency, and a crypto asset's price (its
-crypto is left to the crypto pair). Two are about trades, which it does
-publish, but each asks for the side that took liquidity, which Alpaca's
-stock trades never state: a regular trade with its aggressor, and a maker's
-side inverted. The contract records no aggressor it is not told
-(`Trade.aggressor`: never guessed from the price), so neither can be
-presented without inventing one; this stretches `about`, whose kind is
-trades, and is raised with the lake's plan. The trade's attributes those
-cases also check are proven in test_lake.py.
+Four cases are not presented, each with why (`NOT_PRESENTED`). Two are
+about kinds of data Alpaca's US stock data never publishes (`about`, from
+contract v19): a currency's rate against another currency, and a crypto
+asset's price (its crypto is left to the crypto pair). Two are about a field
+its trades never state (`about_field`, from contract v20): the side that
+took liquidity (`meridian.v1.Trade.aggressor`), which the contract never
+guesses from the price -- a regular trade naming the taker's side, and a
+maker's side inverted. Every other case about trades is presented.
 """
 
 from __future__ import annotations
@@ -57,8 +53,8 @@ Producer = Callable[[Recorder], Awaitable[None]]
 #: The cases Alpaca's stock data does not present, and why (above).
 NOT_PRESENTED = {
     "an-fx-rate": "Alpaca's US stock data states no currency's rate against another",
-    "a-stablecoin-quote": "a dgm of US stocks: Alpaca's crypto is the crypto pair's",
-    "a-trade-recorded": "Alpaca's stock trades never state which side took liquidity",
+    "a-stablecoin-quote": "a data plugin of US stocks: Alpaca's crypto is the crypto pair's",
+    "the-takers-side-stated": "Alpaca's stock trades never state which side took liquidity",
     "the-makers-side-inverted": "Alpaca's stock trades state neither side of a trade",
 }
 
@@ -218,6 +214,41 @@ def producers(tmp: Path) -> dict[str, Producer]:
     async def declined(recorder: Recorder) -> None:
         await wanted(recorder, want(ISIN_ONLY, business_date=DAY))
 
+    async def restarted(recorder: Recorder) -> None:
+        # The plugin starts again; the lake holds the last trade of SPY it
+        # recorded, at 15:59:00, and Alpaca's history states two since. The
+        # first standing want of SPY's trades backfills them, then streams.
+        held = lake(recorder, at("2026-10-09", 16, 5))
+        last = ops.Trade(
+            meta=ops.ObservationMeta(
+                row_key="SPY:52983525029000@LCL-SPY",
+                subjects=[ops.SubjectRef(entity_id=SPY)],
+                source=ops.Source(dataset="suite-plugin:trades"),
+                valid_from_ns=at("2026-10-09", 15, 59),
+            )
+        )
+        recorder.answer("ListTrades", lambda _: ops.ListTradesResult(trades=[last]))
+        event = want(
+            SPY, dataset="suite-plugin:trades", data_type="meridian.v1.Trade", standing=True
+        )
+        recorder.answer("ObservationsWanted", lambda _: event)
+        await recorder.receive(observations_wanted=held.on_want)
+
+    async def licences(recorder: Recorder) -> None:
+        # On start, its own declared datasets' licences (contract v20).
+        from alpaca.__main__ import read_licences
+        from alpaca.page import State
+
+        recorder.answer(
+            "ListDatasets",
+            lambda _: ops.ListDatasetsResult(
+                licences=[ops.DatasetLicence(dataset="suite-plugin:daily", kept=True)]
+            ),
+        )
+        state = State()
+        await read_licences(recorder, state)
+        assert state.licensed == {"suite-plugin:daily"}
+
     async def withdrawn(recorder: Recorder) -> None:
         clock = Clock(AFTER)
         answer_records(recorder, RECORDS)
@@ -249,13 +280,16 @@ def producers(tmp: Path) -> dict[str, Producer]:
         "a-quote-recorded": quote,
         "a-one-sided-quote": one_sided,
         "a-standing-want-streamed": standing_streamed,
+        "a-trade-recorded": standing_streamed,
+        "a-restarts-gap-backfilled": restarted,
+        "reads-its-datasets-licences": licences,
     }
 
 
-def test_the_dgm_suite_passes_unchanged(tmp_path: Path) -> None:
-    report = run("dgm", producers(tmp_path), not_presented=NOT_PRESENTED)
+def test_the_data_suite_passes_unchanged(tmp_path: Path) -> None:
+    report = run("data", producers(tmp_path), not_presented=NOT_PRESENTED)
     assert report.passed, report.failures
-    assert len(report.passed_cases) == 17
+    assert len(report.passed_cases) == 20
     assert sorted(report.not_presented) == sorted(NOT_PRESENTED)
 
 
@@ -265,5 +299,5 @@ def test_a_price_read_through_a_float_fails_the_suite(tmp_path: Path, restore_pa
     import alpaca.vendor as vendor
 
     vendor.parse = lambda text: json.loads(text, parse_float=float)
-    report = run("dgm", producers(tmp_path), not_presented=NOT_PRESENTED)
+    report = run("data", producers(tmp_path), not_presented=NOT_PRESENTED)
     assert "an-exact-price" in report.failures, report.failures

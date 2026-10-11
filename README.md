@@ -1,18 +1,19 @@
 # meridian-alpaca
 
 Alpaca's US equity and ETF market data in an [Open Meridian](https://open-meridian.dev)
-deployment, as a `dgm` plugin: daily closes and bars, live prices and
+deployment, as a data plugin (the `data` role): daily closes and bars, live prices and
 quotes, and trades, put into the deployment's lake for the plugins that
 value and show a book.
 
 It is the first half of the retail pair, beside
 [meridian-tradier](https://github.com/open-meridian/meridian-tradier): both
 pass the same suite of the SDK, unchanged. Alpaca is also a broker; this
-repository is named for the vendor so that a `custody` or `ccm` role can
+repository is named for the vendor so that a `custody` or `connectivity` role can
 arrive here later without a rename.
 
-**Status:** 0.3.0, on open-meridian 0.23.0 (contract 19), proven against core
-e149c69's runtime and plugin harness. Not released.
+**Status:** 0.4.0, on open-meridian 0.24.0 (contract 20), proven locally
+against core v20's runtime and plugin harness, neither released yet. Not
+released.
 
 ## What it serves
 
@@ -63,13 +64,28 @@ e149c69's runtime and plugin harness. Not released.
   later and then doubling to a minute, and subscribed again from what is
   wanted. The gap is read from Alpaca's trade history, and only the trades
   not yet recorded are sent, so the lake holds every trade and a reader
-  that lost some catches up from it. A process started anew streams nothing
-  until the lake asks for a want again: contract v19 gives a dgm no way to
-  read the standing wants back.
+  that lost some catches up from it.
+- **A restart's gap, backfilled** (contract v20). The lake delivers each
+  standing want again to a plugin started anew; the first time a listing's
+  trades are wanted after a restart, the plugin reads the last trade it
+  recorded of it from the lake and records what Alpaca's trade history
+  states since, two days back at most (the trades' default retention),
+  before it streams the listing again.
 - **The suite.** Four of its cases are not presented, each with why: a
   currency's rate and a crypto asset's price (kinds Alpaca's stock data never
-  publishes), and the two that ask for the side that took liquidity, which
-  Alpaca never states.
+  publishes), and the two about the side that took liquidity (a field,
+  `Trade.aggressor`, Alpaca never states).
+
+**Live data from the feed the key is entitled to.** Whether the key has SIP
+in real time is asked by SIP's trades of the last minute, which a free or a
+paper account's key is refused, never by a latest quote; until it has, the
+latest quotes, the latest trades and the stream are IEX's. Should SIP refuse
+a live call, the plugin takes the key not to have it and asks IEX instead.
+
+**A symbol Alpaca has nothing for** (a plan fund a custodian names, such as
+TCH4) is declined once for the date it was wanted for, not asked of Alpaca
+and declined again each minute a standing want is kept current; the next
+day, once more. A decline because Alpaca failed is asked again.
 
 **Instruments another source named.** The lake asks for a price by the
 deployment's own instrument ID. An instrument known to the deployment only
@@ -77,7 +93,7 @@ by another source's identifiers -- a custodian's symbol and CUSIP, as the
 book holds it -- is read from its record, priced under Alpaca's symbol for
 the listing, and Alpaca's symbol is added to the record. Only a record
 carrying no symbol is declined, not covered. On a runtime from before
-contract 18 let a `dgm` read an instrument's record, such an instrument is
+contract 18 let a data plugin read an instrument's record, such an instrument is
 declined, and the Datasets page says why.
 
 ## Alpaca's terms, summarised
@@ -113,8 +129,9 @@ account's, which does not expire.
 3. Enter the **API key ID** and the **API secret key**. Both are secret
    settings: once saved they are never shown again, logged, put on a page or
    sent anywhere but Alpaca.
-4. Open **Connection**: it says whether each part is set (never its value),
-   whether Alpaca answered, and which feeds the key is entitled to.
+4. Open **Connection**: under **Key** it says whether each part is set
+   (never its value), whether Alpaca answered, and which feeds the key is
+   entitled to. With no key it says "No key yet" and links to Settings.
 5. On the deployment's **Data sources** page, license `daily`, `live` and
    `trades`, and entitle the plugins that read prices, trades and quotes.
 
@@ -133,17 +150,18 @@ machine; CI never runs it.
 2. `make e2e-recorded RECORDED=recordings/<when>` replays that recording
    through the e2e on core's plugin harness.
 3. On a development deployment, with the plugin launched and the key entered
-   (above): Connection says **Connected**, IEX in real time and SIP past 15
-   minutes entitled; after a reader asks for a close, Datasets counts it
+   (above): Connection's Mode says **Live**, the Summary's Connection figure
+   **Answering**, IEX in real time and SIP past 15 minutes entitled, SIP in
+   real time not; after a reader asks for a close, Datasets counts it
    recorded; after a reader asks for a listing's latest quote, Connection's
    **Stream** says it streams that listing, and Datasets counts its trades
    and quotes.
 
 ## Building it
 
-    make ci-local        lint, the tests (the SDK's dgm suite among them), meridian plugin check, the image, and the e2e
-    make e2e             the plugin on core's plugin harness, synthetic, with no key (e2e/run.py)
-    make preview         the pages on synthetic data, for a browser beside the kit
+    make ci-local        lint, the tests (the SDK's data suite among them), meridian plugin check, the image, and the e2e
+    make e2e             the plugin on core's plugin harness, on sample data, with no key (e2e/run.py)
+    make preview         the pages on sample data, for a browser beside the kit
     make install-hooks   push runs ci-local first
 
 Everything runs in containers; the host needs Docker and Python 3 for the

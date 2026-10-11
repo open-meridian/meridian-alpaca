@@ -6,7 +6,7 @@ only so that it can name the instruments it asks about as a custodian's
 book would, by resolving their identifiers (W3.1): SPY and BRK.B by Alpaca's own
 symbols, and TQQQ as a custodian's book holds it, by its CUSIP and the
 custodian's symbol alone, a record Alpaca's plugin names to Alpaca by
-reading it (W3.6, a dgm's from contract v18 as ruled 2026-10-10).
+reading it (W3.6, a data plugin's from contract v18 as ruled 2026-10-10).
 
 Its page answers JSON, for the harness's runner (`page --instance reader
 --level read PATH`):

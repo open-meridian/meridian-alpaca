@@ -1,35 +1,41 @@
-"""The plugin's pages, under Manage alone: Connection and Datasets, each a read
-tool on the deployment's MCP surface answering what the page shows
-(`read_connection`, with the stream's session, and `read_datasets`; the lake
-plan's "Every new page's tools"). A `dgm` shows no market data: prices,
-trades and quotes are the reading roles' to read, under their entitlement,
-and an admin page shows no account's data.
+"""The plugin's pages, under Manage alone: the data role's common pages
+(spec/plugin-pages-follow-their-role), Connection and Datasets, in its
+order, each a read tool on the deployment's MCP surface answering what the
+page shows under the role's names (`read_connection`, `read_datasets`).
+Each record is the role's (`meridian.roles.data`), extended with Alpaca's
+fields; each template is the role's, with Alpaca's nuance at its blocks
+only: its feeds under "Key", its stream's session under "Stream", the feed
+each dataset reads as a column of "Served", and a section of what it keeps
+current. A data plugin shows no market data: prices, trades and quotes are
+the reading roles' to read, under their entitlement, and an admin page shows
+no account's data.
 
-Each page fits one screen at 1440x900 and 390x844: one-line rows, and the
-standing wants, which grow, searched and paged (the kit's `search` on an
-`om-pager`, since kit 0.11.0); without the kit, every row is there.
+Each page fits one screen at 1440x900 and 390x844: one-line rows, the
+details a click away, and the standing wants, which grow, drawn the latest
+few with how many there are (the tool answers every one).
 """
 
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import meridian
 from meridian.plugin.v1 import operations_pb2 as ops
+from meridian.roles import data
 
 from .convert import NEW_YORK
 from .declaration import CATALOGUE
 from .lake import DAILY, LIVE, PRICE, QUOTE, TRADES, Lake
 from .records import (
     ConnectionRead,
-    DatasetRead,
     DatasetsRead,
     FeedRead,
+    Served,
     SessionRead,
-    StandingRead,
+    Want,
 )
 from .settings import Config
 from .source import AlpacaSource
@@ -41,8 +47,10 @@ CONNECTION = "/"
 DATASETS = "/datasets"
 #: Alpaca's own limit on the Basic plan, of which the client spends half.
 VENDOR_LIMIT_PER_MINUTE = 200
-#: The kit the pages are built on: 0.11.0's search beside the pager.
-KIT = "0.11.0"
+#: The kit the pages are built on: 0.12.0's "Facts" and "Next step".
+KIT = "0.12.0"
+#: The standing wants a browser is shown, the latest; the tool answers all.
+SHOWN_WANTS = 3
 
 pages = meridian.Pages(TITLE, templates=Path(__file__).parent / "templates", kit=KIT)
 
@@ -56,6 +64,8 @@ class State:
     source: AlpacaSource | None = None
     alpaca: Alpaca | None = None
     streamer: Streamer | None = None
+    #: The datasets a deployment admin has licensed (contract v20), as read.
+    licensed: frozenset[str] = frozenset()
 
 
 _state = State()
@@ -74,52 +84,80 @@ def _when(at_ns: int) -> str:
     return moment.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _shown(at: str) -> str:
+def shown(at: str) -> str:
     """A moment as the page shows it: New York's time, to the minute."""
     if not at:
-        return "never"
+        return ""
     moment = dt.datetime.fromisoformat(at.replace("Z", "+00:00")).astimezone(NEW_YORK)
     return moment.strftime("%b %d %H:%M ET")
+
+
+pages.environment.filters["shown"] = shown
+
+#: The feeds, in Alpaca's words, as the Key section names them.
+FEEDS = (
+    ("iex", "IEX in real time"),
+    ("sip", "every US exchange (SIP), past 15 minutes"),
+    ("sip", "every US exchange (SIP), in real time"),
+)
 
 
 def connection_read(state: State) -> ConnectionRead:
     config = state.config
     usage = state.alpaca.usage if state.alpaca is not None else Usage()
     known = state.source.known if state.source is not None else None
-    if config.synthetic:
-        mode, detail = "synthetic", "Serving the built-in synthetic exchange; Alpaca is not called."
+    if config.sample_data:
+        mode, detail = "Sample data", "Recorded responses; Alpaca is not called."
     elif config.credentials is None:
-        mode, detail = "no key", "Enter the API key ID and secret key in Settings."
+        mode, detail = "No key", "Enter the API key ID and secret key in Settings."
     elif known is None:
-        mode, detail = "live", "Not asked yet: Alpaca is asked when the key is saved."
+        mode, detail = "Live", "Not asked yet: Alpaca is asked when the key is saved."
+    elif not known.answered:
+        mode, detail = "Live", f"Alpaca refused the key: {known.detail}"
     else:
-        mode, detail = "live", known.detail or ("Answered." if known.answered else "")
-    answered = bool(known and known.answered)
-    feeds = [
-        FeedRead("iex", "IEX in real time", bool(known and known.iex)),
-        FeedRead(
-            "sip", "Every US exchange (SIP), past 15 minutes", bool(known and known.sip_history)
-        ),
-        FeedRead("sip", "Every US exchange (SIP), in real time", bool(known and known.sip_live)),
-    ]
-    live_feed = known.live_feed if known is not None and not config.synthetic else IEX
+        mode, detail = "Live", "Alpaca answers the key."
+    has = (
+        (True, True, False)
+        if config.sample_data
+        else (
+            (bool(known.iex), bool(known.sip_history), bool(known.sip_live))
+            if known is not None
+            else (False, False, False)
+        )
+    )
+    feeds = [FeedRead(feed, what, held) for (feed, what), held in zip(FEEDS, has, strict=True)]
+    asked = config.sample_data or (known is not None and known.answered)
+    entitled = "; ".join(f.what for f in feeds if f.entitled)
+    refused = "; ".join(f.what for f in feeds if not f.entitled)
+    live_feed = known.live_feed if known is not None and not config.sample_data else IEX
+    stream = session_read(state) if state.streamer is not None else None
     return ConnectionRead(
         mode=mode,
-        key_id_set=config.key_id_set,
-        secret_key_set=config.secret_key_set,
-        answered=answered or config.synthetic,
-        detail=detail,
-        feeds=feeds,
-        daily_feed=SIP,
-        live_feed=live_feed,
-        limit_per_minute=LIMIT_PER_MINUTE,
-        vendor_limit_per_minute=VENDOR_LIMIT_PER_MINUTE,
+        credentials=[
+            data.Credential("API key ID", config.key_id_set),
+            data.Credential("API secret key", config.secret_key_set),
+        ],
+        entitled_at_vendor=(entitled[:1].upper() + entitled[1:]) if asked else "",
+        limit=(
+            f"{LIMIT_PER_MINUTE} a minute, half of Alpaca's {VENDOR_LIMIT_PER_MINUTE} "
+            "on the Basic plan"
+        ),
         calls=usage.calls,
         rate_limited=usage.rate_limited,
         last_call_at=_when(usage.last_call_at_ns),
+        last_error=(
+            usage.last_error
+            or (state.lake.last_error if state.lake else "")
+            or (stream.last_error if stream is not None else "")
+        ),
+        sessions=(1 if stream is not None and stream.state == "streaming" else 0),
+        detail=detail,
+        not_entitled=(refused[:1].upper() + refused[1:]) if asked else "",
+        feeds=feeds,
+        daily_feed=SIP,
+        live_feed=live_feed,
         last_status=usage.last_status,
-        last_error=usage.last_error or (state.lake.last_error if state.lake else ""),
-        sessions=[session_read(state)] if state.streamer is not None else [],
+        stream=stream,
     )
 
 
@@ -148,72 +186,90 @@ SERVES = {
 }
 
 
+def _terms(declared: Any) -> str:
+    licence = declared.licence_default
+    if licence is None or not licence.kept:
+        kept = "served, not kept"
+    else:
+        kept = f"kept {licence.retention_days} days" if licence.retention_days else "kept"
+    return kept + ("; personal use" if licence is not None and licence.personal_use else "")
+
+
 def datasets_read(state: State) -> DatasetsRead:
     lake = state.lake
     connection = connection_read(state)
     entitled = {f.what: f.entitled for f in connection.feeds}
-    rows: list[DatasetRead] = []
+    served: list[Served] = []
     for declared in CATALOGUE:
         counts = lake.counts[declared.key] if lake is not None else None
         daily = declared.key == DAILY
         feed = connection.daily_feed if daily else connection.live_feed
-        rows.append(
-            DatasetRead(
-                dataset=lake.dataset(declared.key) if lake is not None else declared.key,
-                key=declared.key,
-                serves=SERVES.get(declared.key, declared.key),
-                feed="SIP (consolidated)" if feed == SIP else "IEX",
-                modes=[_mode(m) for m in declared.modes],
-                cadence_seconds=declared.cadence,
-                kept_by_default=bool(declared.licence_default and declared.licence_default.kept),
-                kept_days=declared.licence_default.retention_days
-                if declared.licence_default
-                else 0,
-                personal_use=bool(
-                    declared.licence_default and declared.licence_default.personal_use
-                ),
-                entitled=connection.mode == "synthetic"
-                or (
-                    entitled.get("Every US exchange (SIP), past 15 minutes", False)
-                    if daily
-                    else connection.answered
-                ),
+        if connection.mode == "Sample data":
+            at_vendor = "Yes"
+        elif connection.mode == "No key" or not connection.entitled_at_vendor:
+            at_vendor = "Not asked yet"
+        elif daily:
+            ok = entitled.get(FEEDS[1][1], False)
+            at_vendor = "Yes" if ok else "No: SIP's history"
+        else:
+            at_vendor = "Yes, from IEX" if feed == IEX else "Yes, from SIP"
+        dataset = lake.dataset(declared.key) if lake is not None else declared.key
+        served.append(
+            Served(
+                dataset=dataset,
+                data=SERVES.get(declared.key, declared.key),
+                arrives=", ".join(_mode(m) for m in declared.modes),
+                day="New York's, to 16:00",
+                default_terms=_terms(declared),
+                entitled_at_vendor=at_vendor,
                 recorded=counts.recorded if counts else 0,
+                declined=counts.declined if counts else 0,
+                last_recorded=_when(counts.last_recorded_at_ns) if counts else "",
+                licensed=dataset in state.licensed,
+                key=declared.key,
+                feed="SIP" if feed == SIP else "IEX",
                 restated=counts.restated if counts else 0,
                 unchanged=counts.unchanged if counts else 0,
-                declined=counts.declined if counts else 0,
                 unconverted=counts.unconverted if counts else 0,
-                wants=counts.wants if counts else 0,
-                withdrawn=counts.withdrawn if counts else 0,
                 caught_up=counts.caught_up if counts else 0,
-                last_recorded_at=_when(counts.last_recorded_at_ns) if counts else "",
             )
         )
-    standing = []
+    wants: list[Want] = []
     if lake is not None:
         streamed = set(lake.streamed)
-        for want in lake.standing.values():
-            symbols = [lake.products.symbols.get(s, s) for s in want.subjects]
-            standing.append(
-                StandingRead(
-                    want_id=want.want_id,
-                    dataset=lake.dataset(want.dataset),
-                    subjects=len(want.subjects),
-                    symbols=symbols,
-                    kinds=list(want.kinds),
-                    asks=_asks(want.data_type, want.kinds),
-                    streamed=bool(symbols) and all(s in streamed for s in symbols),
-                    last_kept_at=_when(want.last_at_ns) if want.data_type == PRICE else "",
+        for standing in reversed(list(lake.standing.values())):
+            listings = [lake.products.symbols.get(s, s) for s in standing.subjects]
+            on_stream = bool(listings) and all(s in streamed for s in listings)
+            answered = lake.by_want.get(standing.want_id, [0, 0])
+            if standing.data_type == PRICE and standing.dataset == LIVE:
+                state_word = f"Kept current, {shown(_when(standing.last_at_ns))}"
+            else:
+                state_word = "Streamed" if on_stream else "Past the stream's limit"
+            wants.append(
+                Want(
+                    dataset=lake.dataset(standing.dataset),
+                    asked=_asks(standing.data_type, standing.kinds),
+                    subjects=len(standing.subjects),
+                    recorded=answered[0],
+                    declined=answered[1],
+                    state=state_word,
+                    want_id=standing.want_id,
+                    listings=listings,
+                    streamed=on_stream,
                 )
             )
+    today = lake.today() if lake is not None else ""
     return DatasetsRead(
-        datasets=rows,
-        standing=standing,
+        served=served,
+        wants=wants,
+        reads_instruments=lake.reads_instruments if lake is not None else True,
         listings=len(lake.products.symbols) if lake is not None else 0,
         forming=len(lake.forming) if lake is not None else 0,
-        reads_instruments=lake.reads_instruments if lake is not None else True,
         streamed=len(lake.streamed) if lake is not None else 0,
         past_limit=len(lake.past_limit) if lake is not None else 0,
+        declined_today=(
+            len({k[1] for k in lake.declined if k[2] == today}) if lake is not None else 0
+        ),
     )
 
 
@@ -230,40 +286,64 @@ def _mode(mode: object) -> str:
     return str(mode).removeprefix("OBSERVATION_MODE_").lower()
 
 
-def _stream_row(sessions: list[SessionRead]) -> dict[str, str]:
-    """The stream, one line: its state, what it streams, and its reconnects."""
-    if not sessions:
-        return {"what": "Stream", "value": "Not started", "note": ""}
-    held = sessions[0]
-    limit = f" of {held.limit}" if held.limit is not None else ""
-    if held.state == "streaming":
-        value = (
-            f"{held.subscribed}{limit} listings on {held.feed.upper()}, since {_shown(held.since)}"
+def status(read: ConnectionRead) -> dict[str, str]:
+    """The head's status, the role's Connection words."""
+    if read.mode == "Sample data":
+        return {"state": "ok", "label": "Sample data"}
+    if read.mode == "No key":
+        return {"state": "warn", "label": "No key"}
+    if not read.entitled_at_vendor:
+        return {"state": "error", "label": "Not answering"}
+    return {"state": "warn" if read.last_error else "ok", "label": "Answering"}
+
+
+def figures(state: State) -> list[meridian.Figure]:
+    """The data role's figures, in its order (`meridian.roles.data`); Alpaca
+    reports none of its own."""
+    read = connection_read(state)
+    word = status(read)["label"]
+    connection: Any = word
+    if word == "Not answering":
+        connection = meridian.Figure("", word, state="error", why=read.detail[:200])
+    elif word == "Answering" and read.last_error:
+        connection = meridian.Figure("", word, state="warn", why=read.last_error[:200])
+    served = datasets_read(state).served
+    ok = [s for s in served if s.entitled_at_vendor.startswith("Yes")]
+    entitled: Any = None
+    if read.mode != "No key":
+        missing = [s.key for s in served if s not in ok]
+        entitled = meridian.Figure(
+            "",
+            f"{len(ok)} of {len(served)} datasets",
+            state="warn" if missing else None,
+            why=("Not served: " + ", ".join(missing)) if missing else "",
         )
-    elif held.state == "idle":
-        value = "Idle: no standing want"
+    stream = read.stream
+    if stream is None or stream.state in ("idle", ""):
+        streaming: Any = "Off"
+    elif stream.state == "streaming":
+        limit = f" of {stream.limit}" if stream.limit is not None else ""
+        streaming = f"{stream.subscribed}{limit} listings"
     else:
-        value = held.state.capitalize()
-    notes = [f"{held.reconnects} reconnects", f"{held.caught_up} trades caught up"]
-    if held.last_error:
-        notes.append(held.last_error)
-    return {"what": "Stream", "value": value, "note": "; ".join(notes)}
-
-
-def _dot(read: ConnectionRead) -> dict[str, str]:
-    if read.mode == "synthetic":
-        return {"state": "ok", "label": "Synthetic", "text": "Synthetic"}
-    if read.mode == "no key":
-        return {"state": "warn", "label": "No key", "text": "No key"}
-    if not read.answered:
-        return {"state": "error", "label": "Not answering", "text": "Not answering"}
-    if read.last_error:
-        return {"state": "warn", "label": "Errors", "text": "Errors"}
-    return {"state": "ok", "label": "Connected", "text": "Connected"}
-
-
-def _yes(flag: bool) -> dict[str, str]:
-    return {"label": "Yes", "tone": "good"} if flag else {"label": "No", "tone": "warn"}
+        streaming = meridian.Figure(
+            "", stream.state.capitalize(), state="warn", why=stream.last_error[:200]
+        )
+    last = max((s.last_recorded for s in served), default="")
+    used = state.alpaca.usage if state.alpaca is not None else Usage()
+    now = state.alpaca.clock_ns() if state.alpaca is not None else 0
+    spent = used.last_minute(now) if now else 0
+    return data.figures(
+        connection=connection,
+        entitled_at_vendor=entitled,
+        stream=streaming,
+        last_recorded=(dt.datetime.fromisoformat(last.replace("Z", "+00:00")) if last else None),
+        rate_use=meridian.Figure(
+            "",
+            f"{spent} of {LIMIT_PER_MINUTE} a minute",
+            state="warn" if spent * 5 >= LIMIT_PER_MINUTE * 4 else None,
+            why=f"{used.rate_limited} answered 429 and waited out" if used.rate_limited else "",
+        ),
+    )
 
 
 @pages.page(
@@ -273,59 +353,17 @@ def _yes(flag: bool) -> dict[str, str]:
     answers=ConnectionRead,
     name="read_connection",
     description=(
-        "The plugin's connection to Alpaca: whether each part of the key is set (never "
-        "its value) and whether Alpaca answers it, the feeds the key is entitled to and "
-        "which each dataset uses, Alpaca's rate limit and what this process has spent of "
-        "it, the last error, and the stream's session (its state, the listings streamed, "
-        "reconnects and trades caught up). No market data."
+        "The plugin's connection to Alpaca, as every data plugin's Connection answers it: "
+        "the mode (Live, Sample data or No key), each credential and whether it is set "
+        "(never its value), what Alpaca serves the key, the limit and this process's "
+        "calls, the last call and error, and the streaming sessions; then Alpaca's own: "
+        "the feeds and which each dataset reads, and the stream's session (its state, "
+        "listings, reconnects and trades caught up). No market data."
     ),
 )
 async def connection(request: meridian.Request) -> meridian.Response:
     read = connection_read(_state)
-    entitled = [f.what for f in read.feeds if f.entitled]
-    refused = [f.what for f in read.feeds if not f.entitled]
-    key_rows = [
-        {"what": "Mode", "value": read.mode.capitalize(), "note": read.detail},
-        {
-            "what": "Key",
-            "value": ", ".join(
-                [
-                    "ID " + ("set" if read.key_id_set else "not set"),
-                    "secret " + ("set" if read.secret_key_set else "not set"),
-                ]
-            ),
-            "note": "Secret settings: never shown",
-        },
-        {"what": "Entitled", "value": "; ".join(entitled) or "Nothing yet", "note": ""},
-        {"what": "Not entitled", "value": "; ".join(refused) or "Nothing", "note": ""},
-    ]
-    use_rows = [
-        {
-            "what": "Rate limit",
-            "value": f"{read.limit_per_minute} a minute",
-            "note": f"half of Alpaca's {read.vendor_limit_per_minute} on the Basic plan",
-        },
-        {
-            "what": "Calls",
-            "value": f"{read.calls} since start",
-            "note": f"{read.rate_limited} answered 429 and waited out",
-        },
-        {
-            "what": "Last call",
-            "value": _shown(read.last_call_at),
-            "note": f"HTTP {read.last_status}" if read.last_status else "",
-        },
-        {"what": "Last error", "value": read.last_error or "None", "note": ""},
-        _stream_row(read.sessions),
-    ]
-    return pages.answer(
-        "connection.html",
-        read,
-        dot=_dot(read),
-        key_rows=key_rows,
-        use_rows=use_rows,
-        feeds={"daily": read.daily_feed.upper(), "live": read.live_feed.upper()},
-    )
+    return pages.answer("connection.html", read, head=status(read))
 
 
 @pages.page(
@@ -335,94 +373,21 @@ async def connection(request: meridian.Request) -> meridian.Response:
     answers=DatasetsRead,
     name="read_datasets",
     description=(
-        "The datasets the plugin serves the lake: each one's catalogue entry (what it "
-        "serves, from which feed, how rows arrive, its default terms), whether the key is "
-        "entitled to it at Alpaca, and what it recorded, restated, withdrew and declined "
-        "since the plugin started; the standing wants it keeps current and streams; the "
-        "listings it has served. No prices, trades or quotes."
+        "The datasets the plugin serves the lake, as every data plugin's Datasets answers "
+        "them: each one as its catalogue declares it, whether a deployment admin has "
+        "licensed it, whether Alpaca serves the key it, and what it recorded and declined "
+        "since the plugin started; the standing wants it keeps current; whether it may "
+        "read an instrument's record. Then Alpaca's own: the feed each dataset reads, the "
+        "listings known and streamed, and the subjects declined today. No prices, trades "
+        "or quotes."
     ),
 )
 async def datasets(request: meridian.Request) -> meridian.Response:
     read = datasets_read(_state)
-    grid_rows = [
-        {
-            "id": d.key,
-            "dataset": d.dataset,
-            "serves": d.serves,
-            "feed": "SIP" if d.feed.startswith("SIP") else d.feed,
-            "modes": ", ".join(d.modes),
-            "terms": (
-                (f"kept {d.kept_days} days" if d.kept_days else "kept")
-                if d.kept_by_default
-                else "served"
-            )
-            + ("; personal" if d.personal_use else ""),
-            "entitled": "Yes" if d.entitled else "No",
-            "entitled_tone": "good" if d.entitled else "warn",
-            "recorded": str(d.recorded),
-            "restated": str(d.restated),
-            "declined": str(d.declined),
-            "unconverted": str(d.unconverted),
-            "last": _shown(d.last_recorded_at),
-        }
-        for d in read.datasets
-    ]
-    columns = [
-        {"key": "dataset", "label": "Dataset", "strong": True, "priority": 1, "width": "7.5rem"},
-        {"key": "feed", "label": "Feed", "priority": 3, "width": "4.5rem"},
-        {"key": "modes", "label": "Arrives", "priority": 3, "width": "7rem"},
-        {"key": "terms", "label": "Default terms", "priority": 3, "width": "9rem"},
-        {
-            "key": "entitled",
-            "label": "Entitled",
-            "type": "badge",
-            "tone": {"field": "entitled_tone"},
-            "priority": 1,
-            "width": "6rem",
-        },
-        {"key": "recorded", "label": "Recorded", "type": "number", "priority": 1},
-        {"key": "restated", "label": "Restated", "type": "number", "priority": 3},
-        {"key": "declined", "label": "Declined", "type": "number", "priority": 2},
-        {"key": "unconverted", "label": "Unconverted", "type": "number", "priority": 3},
-        {"key": "last", "label": "Last recorded", "priority": 3, "width": "8rem"},
-    ]
-    standing_rows = [
-        {
-            "id": s.want_id,
-            "symbols": ", ".join(s.symbols[:8])
-            + (f" and {len(s.symbols) - 8} more" if len(s.symbols) > 8 else ""),
-            "dataset": s.dataset.rpartition(":")[2],
-            "asks": s.asks,
-            "subjects": str(s.subjects),
-            "streamed": "Yes" if s.streamed else "No",
-            "streamed_tone": "good" if s.streamed else "warn",
-            "kept": _shown(s.last_kept_at) if s.last_kept_at else "streamed",
-        }
-        for s in read.standing
-    ]
-    standing_columns = [
-        {"key": "symbols", "label": "Listings", "strong": True, "priority": 1},
-        {"key": "dataset", "label": "Dataset", "priority": 2, "width": "5rem"},
-        {"key": "asks", "label": "Asks", "priority": 3},
-        {"key": "subjects", "label": "Subjects", "type": "number", "priority": 3},
-        {
-            "key": "streamed",
-            "label": "Streamed",
-            "type": "badge",
-            "tone": {"field": "streamed_tone"},
-            "priority": 1,
-            "width": "6rem",
-        },
-        {"key": "kept", "label": "Last kept", "priority": 3},
-    ]
-    return pages.answer(
-        "datasets.html",
-        read,
-        grid={"columns": columns, "rows": grid_rows},
-        grid_rows=grid_rows,
-        standing_grid={"columns": standing_columns, "rows": standing_rows},
-        standing_rows=standing_rows,
-    )
+    # A tool answers every want; a browser draws the latest few, and says
+    # how many there are.
+    drawn = read if request.tool_name else replace(read, wants=read.wants[:SHOWN_WANTS])
+    return pages.answer("datasets.html", drawn, wants=len(read.wants))
 
 
 def serve(plugin: meridian.Plugin, state: State, port: int) -> Any:

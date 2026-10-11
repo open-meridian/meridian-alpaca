@@ -111,6 +111,46 @@ def test_entitlements_are_asked_once_each(tmp_path: Path) -> None:
     assert entitled.answered and entitled.iex and entitled.sip_history and not entitled.sip_live
     assert entitled.live_feed == IEX
     assert "feed=sip" in transport.asked[1][0] and "feed=sip" in transport.asked[2][0]
+    # SIP in real time is asked as Alpaca restricts it, by its trades of the
+    # last minute, never by a latest quote; the refusal is an answer, not the
+    # plugin's last error.
+    assert "/v2/stocks/trades?" in transport.asked[2][0] and "limit=1" in transport.asked[2][0]
+    assert "/quotes/latest" not in transport.asked[2][0]
+
+
+def test_a_refused_probe_is_not_the_last_error(tmp_path: Path) -> None:
+    transport = Scripted(
+        (200, '{"quotes":{}}', {}),
+        (200, '{"bars":{},"next_page_token":null}', {}),
+        (403, '{"message":"subscription does not permit querying recent SIP data"}', {}),
+    )
+    alpaca = client(tmp_path, transport)
+    alpaca.entitlements()
+    assert alpaca.usage.last_error == ""
+
+
+def test_latest_quotes_fall_back_to_iex_where_sip_refuses_them(tmp_path: Path) -> None:
+    """A key taken to have SIP in real time that SIP refuses (a free or a
+    paper key) is asked of IEX, the feed it is entitled to, from then on."""
+    from alpaca.source import AlpacaSource
+    from alpaca.vendor import Entitlements
+
+    quote = (
+        '{"quotes":{"SPY":{"t":"2026-10-09T19:59:59Z","bx":"V","bp":575.4,"bs":1,'
+        '"ax":"V","ap":575.5,"as":1}}}'
+    )
+    transport = Scripted(
+        (403, '{"message":"subscription does not permit querying recent SIP data"}', {}),
+        (200, quote, {}),
+        (200, quote, {}),
+    )
+    source = AlpacaSource(client(tmp_path, transport))
+    source._entitled = Entitlements(answered=True, iex=True, sip_history=True, sip_live=True)
+    assert [q.symbol for q in source.quotes(["SPY"])] == ["SPY"]
+    assert "feed=sip" in transport.asked[0][0] and "feed=iex" in transport.asked[1][0]
+    assert source.live_feed == IEX
+    source.quotes(["SPY"])
+    assert "feed=iex" in transport.asked[2][0]
 
 
 def test_a_refused_key_is_said(tmp_path: Path) -> None:

@@ -11,7 +11,7 @@ quote's side), so a person auditing a row follows it here and finds exactly
 what Alpaca said.
 
 Where the records live: `meridian.edge.storage_dir()` when the deployment
-grants the instance storage (a `dgm` is an edge role); a temporary directory
+grants the instance storage (`data` is an edge role); a temporary directory
 in the tests; `recordings/`, git-ignored, for `make live`, the account
 holder's live check (real recordings stay theirs: the lake plan's Q11). No
 other plugin reads them.

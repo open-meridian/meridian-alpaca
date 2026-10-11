@@ -42,14 +42,14 @@ E2E_RECORDED ?=
 help:
 	@echo "  make ci-local       every gate: lint, tests, plugin check, the plugin's image, and e2e (the pre-push gate)"
 	@echo "  make ci-remote      what ci.yaml runs: lint and tests"
-	@echo "  make test           the tests on the synthetic exchange, the dgm suite among them, in a container"
+	@echo "  make test           the tests on the synthetic exchange, the data suite among them, in a container"
 	@echo "  make lint           ruff and mypy, strict"
 	@echo "  make check          what check.yaml runs: meridian plugin check --verified --run-tests, in a container"
 	@echo "  make image          build the plugin's image, as upload would, and check it"
-	@echo "  make e2e            the plugin, synthetic, on the plugin harness of the runtime it pins (e2e/run.py)"
+	@echo "  make e2e            the plugin, on sample data, on the plugin harness of the runtime it pins (e2e/run.py)"
 	@echo "  make e2e-recorded   the same on RECORDED, a developer's own recording, never committed"
 	@echo "  make live           the account holder's live check: asks for the key, unseen (never in CI)"
-	@echo "  make preview        write preview/: each page on synthetic data, linking the kit"
+	@echo "  make preview        write preview/: each page on sample data, linking the kit"
 	@echo "  make fmt            apply the formatter"
 	@echo "  make install-hooks  point git at hooks/ so push fires ci-local"
 
@@ -158,10 +158,10 @@ live:
 preview:
 	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
 	@mkdir -p preview
-	@for tab in connection datasets connection-no-key; do \
+	@for tab in connection datasets connection-no-key datasets-no-key; do \
 		docker run --rm $(CHECK) python -m alpaca.preview $$tab >preview/$$tab.html || exit 1; \
 	done
-	@echo "preview: preview/connection.html, preview/datasets.html, preview/connection-no-key.html"
+	@echo "preview: preview/connection.html, preview/datasets.html, and each -no-key"
 
 # Applied in a container and written back, because the host has no toolchain.
 fmt:

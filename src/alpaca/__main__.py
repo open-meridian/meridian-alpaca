@@ -1,17 +1,21 @@
 """The Alpaca plugin: Alpaca's US equity and ETF market data in an Open Meridian
-deployment's lake, as a `dgm` (contract v19; plans/the-lake-prices-the-book,
+deployment's lake, as a data plugin (contract v20; plans/the-lake-prices-the-book,
 the retail pair).
 
 It connects to the sidecar it is launched beside, declaring its catalogue,
 its settings and its storage (declaration.py) and its pages (page.py); on
 each delivery of its settings it makes its Alpaca client again with the key
-(or, in synthetic mode, the built-in exchange) and asks which feeds the key
-is entitled to; then it hears what the lake wants of it and records against
-each want or declines it per subject (lake.py), and keeps its timetable:
+(or, with sample data, the built-in exchange) and asks which feeds the key
+is entitled to; it reads which of its datasets a deployment admin has
+licensed (contract v20), and reports the data role's figures; then it
+hears what the lake wants of it and records against each want or declines
+it per subject (lake.py), and keeps its timetable:
 standing wants kept current, days still forming read again, a final close
 pushed. While any standing want stands, it streams Alpaca's trades and
 quotes for the listings wanted (stream.py), reconnecting when the stream
-breaks and catching up the gap.
+breaks and catching up the gap; and, the first time a listing's trades are
+wanted after a restart, backfilling what it missed while stopped from the
+last trade it recorded (lake.py, `backfill_restart`).
 
 It holds nothing it cannot lose: what each subject's symbol is, and every
 raw response, are in the storage the deployment grants it (decisions/028);
@@ -36,7 +40,7 @@ from meridian import edge
 
 from .declaration import DECLARATION
 from .lake import Lake, Products
-from .page import TITLE, State, pages, serve
+from .page import TITLE, State, figures, pages, serve
 from .raw import RawStore, storage_root
 from .settings import DECLARED, Config, config_from
 from .source import AlpacaSource
@@ -48,12 +52,14 @@ log = logging.getLogger("alpaca")
 
 #: How often the timetable is looked at.
 TICK_SECONDS = 15
+#: How often the datasets' licences are read again.
+LICENCES_SECONDS = 60
 
 
 def source_for(config: Config, store: RawStore) -> tuple[Alpaca | None, AlpacaSource | None]:
-    """The client and the source the settings give: synthetic, the key's, or
-    none while the key is incomplete."""
-    if config.synthetic:
+    """The client and the source the settings give: sample data, the key's,
+    or none while the key is incomplete."""
+    if config.sample_data:
         alpaca = Alpaca(store, None, transport=SyntheticTransport(), keyless=True)
         return alpaca, AlpacaSource(alpaca, synthetic=True)
     if config.credentials is None:
@@ -63,10 +69,10 @@ def source_for(config: Config, store: RawStore) -> tuple[Alpaca | None, AlpacaSo
 
 
 def feed_for(state: State, store: RawStore) -> Feed | None:
-    """The stream the settings give: synthetic, Alpaca's on the feed the key
-    has in real time, or none while the key is incomplete."""
+    """The stream the settings give: sample data, Alpaca's on the feed the
+    key has in real time, or none while the key is incomplete."""
     config = state.config
-    if config.synthetic:
+    if config.sample_data:
         return SyntheticFeed(store)
     if config.credentials is None:
         return None
@@ -77,7 +83,7 @@ def feed_for(state: State, store: RawStore) -> Feed | None:
 
 def stream_limit(state: State) -> int | None:
     """How many listings the key may stream at once."""
-    if state.config.synthetic:
+    if state.config.sample_data:
         return None
     known = state.source.known if state.source is not None else None
     return symbol_limit(known.live_feed if known is not None else IEX)
@@ -87,22 +93,45 @@ async def health(plugin: meridian.Plugin, state: State) -> None:
     """Say how the source is, on the heartbeat: a missing key or a refused one
     is the plugin's health, never a ticket."""
     config = state.config
-    if config.synthetic:
-        await plugin.report(healthy=True, detail="synthetic: the built-in exchange")
+    if config.sample_data:
+        await say(plugin, state, True, "sample data: the built-in exchange")
         return
     if state.source is None:
-        await plugin.report(healthy=False, detail="no Alpaca key: enter it in Settings")
+        await say(plugin, state, False, "no Alpaca key: enter it in Settings")
         return
     try:
         entitled = await asyncio.to_thread(state.source.entitlements, True)
     except (NoKey, VendorError, OSError) as failed:
-        await plugin.report(healthy=False, detail=f"Alpaca did not answer: {failed}"[:200])
+        await say(plugin, state, False, f"Alpaca did not answer: {failed}")
         return
     if not entitled.answered:
-        await plugin.report(healthy=False, detail=f"Alpaca refused the key: {entitled.detail}")
+        await say(plugin, state, False, f"Alpaca refused the key: {entitled.detail}")
         return
     live = "SIP" if entitled.sip_live else "IEX"
-    await plugin.report(healthy=True, detail=f"answering; daily from SIP, live from {live}")
+    await say(plugin, state, True, f"answering; daily from SIP, live from {live}")
+
+
+async def say(plugin: meridian.Plugin, state: State, healthy: bool, detail: str) -> None:
+    """The plugin's health, with the data role's figures as they stand."""
+    await plugin.report(healthy=healthy, detail=detail[:200], figures=figures(state))
+
+
+async def read_licences(plugin: Any, state: State) -> None:
+    """Which of its own declared datasets a deployment admin has licensed
+    (contract v20, W10.9), for the Datasets page: a dataset with none is
+    served by its catalogue's default terms until one is set."""
+    answered = await plugin.list_datasets()
+    state.licensed = frozenset(licence.dataset for licence in answered.licences)
+
+
+async def licences(plugin: meridian.Plugin, state: State) -> None:
+    """The licences, read on start and every minute."""
+    while True:
+        try:
+            await read_licences(plugin, state)
+        except meridian.MeridianError as failed:
+            log.warning("the datasets' licences were not read this time: %s", failed)
+        await asyncio.sleep(LICENCES_SECONDS)
 
 
 async def watch_settings(
@@ -113,7 +142,7 @@ async def watch_settings(
         state.alpaca, state.source = source_for(state.config, store)
         if state.lake is not None:
             state.lake.source = state.source
-            if state.config.synthetic:
+            if state.config.sample_data:
                 # The built-in exchange's listings, as a source's own list.
                 await state.lake.seed(sorted(exchange()["bars"]))
         configured.set()
@@ -125,12 +154,14 @@ async def watch_settings(
             state.streamer.restart()
 
 
-async def timetable(lake: Lake) -> None:
+async def timetable(plugin: meridian.Plugin, state: State, lake: Lake) -> None:
     while True:
         try:
             await lake.tick()
         except meridian.MeridianError as failed:
             log.warning("the timetable stopped this time: %s", failed)
+        # The figures go on the next heartbeat.
+        plugin.figures = figures(state)
         await asyncio.sleep(TICK_SECONDS)
 
 
@@ -194,7 +225,10 @@ async def run() -> None:
                 )
             )
         )
-        tasks.append(asyncio.create_task(again(lambda: timetable(lake), "the timetable")))
+        tasks.append(asyncio.create_task(again(lambda: licences(plugin, state), "the licences")))
+        tasks.append(
+            asyncio.create_task(again(lambda: timetable(plugin, state, lake), "the timetable"))
+        )
         tasks.append(asyncio.create_task(again(streamer.run, "the stream")))
         log.info("serving its pages on 127.0.0.1:%d, hearing the lake's wants", port)
         await stopped.wait()

@@ -9,9 +9,13 @@ displayed, logged, reported or kept. They reach this process in
 repr; vendor.py sends them as Alpaca's two headers and keeps neither in any
 raw record; the Connection page says whether each is set, never what it is.
 
-`synthetic`, a developer's setting (shown only on a development deployment),
-serves the built-in synthetic exchange (synthetic.py) instead of calling
-Alpaca, with no key: what the e2e and a first look use.
+The data role's common settings, in its order
+(spec/plugin-pages-follow-their-role): no `environment`, since Alpaca's
+market data has one (a paper account's key reads the same service); the two
+credentials, in Alpaca's words; and `sample_data`, a developer's setting
+(`meridian.sample_data`, shown only on a development deployment), serving
+the built-in recorded exchange (synthetic.py) instead of calling Alpaca,
+with no key: what the e2e and a first look use.
 """
 
 from __future__ import annotations
@@ -23,40 +27,33 @@ import meridian
 
 KEY_ID = "alpaca_api_key_id"
 SECRET_KEY = "alpaca_api_secret_key"
-SYNTHETIC = "synthetic"
+SAMPLE_DATA = "sample_data"
 
-DECLARED: tuple[meridian.Setting, ...] = (
-    meridian.Setting(
-        KEY_ID,
-        str,
+
+@meridian.settings
+class Declared:
+    """The settings as declared, in the data role's order: one typed class,
+    the SDK's form, which `connect` and the declaration register."""
+
+    alpaca_api_key_id: str = meridian.setting(
+        "API key ID",
         required=True,
         secret=True,
-        label="API key ID",
         description=(
             "From Alpaca's dashboard, under API keys. A free account's key, or a paper "
             "account's, suffices; it does not expire."
         ),
-    ),
-    meridian.Setting(
-        SECRET_KEY,
-        str,
+    )
+    alpaca_api_secret_key: str = meridian.setting(
+        "API secret key",
         required=True,
         secret=True,
-        label="API secret key",
         description="Shown once, when Alpaca issues the key.",
-    ),
-    meridian.Setting(
-        SYNTHETIC,
-        bool,
-        default=False,
-        developer=True,
-        label="Synthetic",
-        description=(
-            "Serve the built-in synthetic Alpaca responses instead of calling Alpaca, "
-            "with no key. For development and tests only."
-        ),
-    ),
-)
+    )
+    sample_data: bool = meridian.sample_data()
+
+
+DECLARED = Declared
 
 
 @dataclass(frozen=True)
@@ -83,17 +80,17 @@ class Credentials:
 @dataclass(frozen=True)
 class Config:
     """The settings as the plugin uses them: the key, if both parts are
-    given, which parts are set (never their values), and synthetic mode."""
+    given, which parts are set (never their values), and sample data."""
 
     credentials: Credentials | None = None
     key_id_set: bool = False
     secret_key_set: bool = False
-    synthetic: bool = False
+    sample_data: bool = False
 
     @property
     def ready(self) -> bool:
-        """Whether there is something to ask: synthetic, or the whole key."""
-        return self.synthetic or self.credentials is not None
+        """Whether there is something to ask: sample data, or the whole key."""
+        return self.sample_data or self.credentials is not None
 
 
 def config_from(values: Mapping[str, object]) -> Config:
@@ -103,5 +100,5 @@ def config_from(values: Mapping[str, object]) -> Config:
         credentials=Credentials(key_id, secret_key) if key_id and secret_key else None,
         key_id_set=bool(key_id),
         secret_key_set=bool(secret_key),
-        synthetic=values.get(SYNTHETIC) is True,
+        sample_data=values.get(SAMPLE_DATA) is True,
     )

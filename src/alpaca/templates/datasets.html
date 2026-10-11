@@ -1,30 +1,22 @@
-{#- Datasets, at admin: what the plugin serves the lake, its default terms,
-    what the key is entitled to, and what it recorded; the standing wants it
-    keeps current and streams, searched and paged (they grow). No prices,
-    trades or quotes: those are the reading roles'. -#}
-{% extends "meridian/base.html" %}
-{% block content %}
-<p class="muted">Daily: closes and bars, New York's day to 16:00. Live: last, bid, ask and quotes. Trades: each with its conditions converted. Licensed on the Data sources page; terms are Alpaca's defaults, personal use.</p>
-<section class="panel">
-<om-grid id="datasets" row-key="id" dense one-line narrow="priority" caption="Datasets">
-<script type="application/json">{{ grid|tojson }}</script>
-<div class="table-wrap"><table class="one-line"><caption>Datasets</caption>
-<thead><tr><th>Dataset</th><th>Feed</th><th>Arrives</th><th>Default terms</th><th>Entitled</th><th class="num">Recorded</th><th class="num">Restated</th><th class="num">Declined</th><th class="num">Unconverted</th><th>Last recorded</th></tr></thead>
-<tbody>{% for row in grid_rows %}<tr><td>{{ row.dataset }}</td><td>{{ row.feed }}</td><td>{{ row.modes }}</td><td>{{ row.terms }}</td><td><span class="badge {{ row.entitled_tone }}">{{ row.entitled }}</span></td><td class="num">{{ row.recorded }}</td><td class="num">{{ row.restated }}</td><td class="num">{{ row.declined }}</td><td class="num">{{ row.unconverted }}</td><td>{{ row.last }}</td></tr>{% endfor %}</tbody>
-</table></div>
-</om-grid>
-</section>
-<section class="panel">
-<div class="panel-body"><h2>Kept current</h2>
-<p class="muted">{{ data.listings }} listings known, {{ data.streamed }} streamed{% if data.past_limit %}, {{ data.past_limit }} past what the key may stream{% endif %}; {{ data.forming }} days still forming.{% if not data.reads_instruments %} An instrument another source named is declined: this deployment does not let a dgm read an instrument's record.{% endif %}</p></div>
-<om-pager search="Search standing wants">
-<om-grid id="standing" row-key="id" dense one-line narrow="priority" caption="Standing wants" empty="No standing wants: nothing is kept current.">
-<script type="application/json">{{ standing_grid|tojson }}</script>
-<div class="table-wrap"><table class="one-line"><caption>Standing wants</caption>
-<thead><tr><th>Listings</th><th>Dataset</th><th>Asks</th><th class="num">Subjects</th><th>Streamed</th><th>Last kept</th></tr></thead>
-<tbody>{% for row in standing_rows %}<tr><td>{{ row.symbols }}</td><td>{{ row.dataset }}</td><td>{{ row.asks }}</td><td class="num">{{ row.subjects }}</td><td><span class="badge {{ row.streamed_tone }}">{{ row.streamed }}</span></td><td>{{ row.kept }}</td></tr>{% else %}<tr><td colspan="6" class="faint">No standing wants: nothing is kept current.</td></tr>{% endfor %}</tbody>
-</table></div>
-</om-grid>
-</om-pager>
+{#- Datasets, at admin: the data role's (meridian/roles/data/datasets.html),
+    with Alpaca's nuance at its blocks only -- a line on the terms, the feed
+    each dataset reads as a column of "Served", how many standing wants
+    there are past the latest few drawn, and what it keeps current. No
+    prices, trades or quotes: those are the reading roles'. -#}
+{% extends "meridian/roles/data/datasets.html" %}
+{% import "meridian/roles/_rows.html" as om %}
+{% block vendor_notices %}
+<p class="muted"><span class="wide-only">Daily: New York's day to 16:00; live: last, bid, ask and quotes; trades, their conditions converted. Alpaca's terms, one person's use, until licensed.</span>{% if wants > data.wants|length %} The latest {{ data.wants|length }} of {{ wants }} standing wants are shown.{% endif %}</p>
+{% endblock %}
+{% block vendor_columns %}
+{% if row is none %}<th class="wide-only">Feed</th>{% else %}<td class="wide-only">{{ row.feed }}</td>{% endif %}
+{% endblock %}
+{% block vendor_sections %}
+<section class="panel wide-only">
+<h2>Kept current</h2>
+<table class="one-line"><tbody>
+{{ om.row("Listings", data.listings ~ " known, " ~ data.streamed ~ " streamed", (data.past_limit ~ " past what the key may stream") if data.past_limit else "") }}
+{{ om.row("Declined", data.declined_today ~ " today", "each once for the date: Alpaca has nothing for it, or its record names no symbol") }}
+</tbody></table>
 </section>
 {% endblock %}

@@ -1,14 +1,14 @@
 # alpaca
 
 Alpaca's US equity and ETF market data in an Open Meridian deployment's
-lake, as a `dgm` (contract v19). What is particular to this plugin first;
+lake, as a data plugin (contract v20). What is particular to this plugin first;
 the rest of this file is the SDK template's guidance, which holds for it
 as for every plugin.
 
 ## This plugin
 
 - `src/alpaca/declaration.py`: the catalogue (`daily`, `live` and `trades`), the
-  settings (the key's two secret parts; `synthetic`, a developer's) and the
+  settings (the key's two secret parts; `sample_data`, a developer's) and the
   storage. A dataset's key, modes, day and default terms change only with a
   new version, and the deployment admin sees them before approving it.
 - `src/alpaca/vendor.py`: the only module that speaks to Alpaca. Every
@@ -25,13 +25,19 @@ as for every plugin.
   WebSocket (the standard library's client), its reconnect and catch-up, and
   the conditions converted to the platform's trade attributes on each tape.
   What is streamed is what the standing wants ask (lake.py), never kept here.
-- `src/alpaca/page.py`: Connection and Datasets, under Manage, each a read
-  tool (`read_connection`, `read_datasets`). No page shows a price: prices
-  are the reading roles', under their entitlement.
+- `src/alpaca/page.py` and `records.py`: the data role's Connection and
+  Datasets (spec/plugin-pages-follow-their-role), under Manage, each a read
+  tool (`read_connection`, `read_datasets`) answering the role's common
+  fields, `meridian.roles.data`'s records extended with Alpaca's. Their
+  templates extend the role's and add Alpaca's nuance at its blocks alone
+  (`vendor_notices`, `vendor_rows`, `vendor_columns`, `vendor_sections`):
+  never rename, reorder or drop a common section, row, column or label. No
+  page shows a price: prices are the reading roles', under their
+  entitlement.
 - `src/alpaca/synthetic.py` and `exchanges/exchange.json`: Alpaca's responses
-  with invented values, for synthetic mode, the tests and the e2e. Never
+  with invented values, for sample data, the tests and the e2e. Never
   commit a real response: they are the account holder's, for personal use.
-- `tests/test_suite.py` runs the SDK's `dgm` suite unchanged. Keep it passing
+- `tests/test_suite.py` runs the SDK's data suite unchanged. Keep it passing
   after every change; `make ci-local` runs it, and the e2e on core's plugin
   harness (`e2e/run.py`).
 - **Never handle a real key in a session.** The product owner enters it in
@@ -77,9 +83,8 @@ and subscribe to comes from the roles `pyproject.toml` declares under
   page (`plugin.link_external_account(..., acting_for=request.caller.header)`,
   the accounts offered from `plugin.read_accounts_for_linking`), and which are
   linked is the plugin's account scope (`plugin.account_scope()`, its
-  `links`), read rather than kept. This plugin, a `dgm` alone, records
-  nothing for an account and links nothing: its rows are prices, about the
-  deployment's instruments.
+  `links`), read rather than kept. This plugin, a data plugin alone, records nothing for an account and
+  links nothing: its rows are prices, about the deployment's instruments.
 - **On a plugin holding several roles, name the roles each declaration
   serves.** A person's level is granted per role of a plugin: write on its
   `operations` and read on its `custody`, say. A plugin whose
@@ -164,8 +169,8 @@ and subscribe to comes from the roles `pyproject.toml` declares under
   `already_recorded`. Re-resolve an account's activities whenever what
   resolves them changes.
 - **A plugin at the edge declares the kinds of raw record it keeps, and
-  moves them past their window through the SDK.** A plugin holding `ccm`,
-  `custody`, `servicing`, `match`, `settlement`, `dgm` or `reporting` keeps
+  moves them past their window through the SDK.** A plugin holding `connectivity`,
+  `custody`, `servicing`, `confirmation`, `settlement`, `data` or `reporting` keeps
   what its vendor sent in its own storage (`meridian.edge.storage_dir()`)
   and declares each kind in its declaration: `Storage(kinds=[
   meridian.RecordKind("activity", "Reported activity", window_days=2555)])`,
@@ -204,7 +209,7 @@ and subscribe to comes from the roles `pyproject.toml` declares under
   `activity_past_window` says, and say on the plugin's page how long they
   are kept, as set and as kept. So each activity the street holds can have
   its record read back, from storage or restored from the archive.
-- **A `dgm` plugin puts its source's prices into the lake, converted at the
+- **A data plugin puts its source's prices into the lake, converted at the
   edge, and shows none.** Declare each dataset in the declaration's
   catalogue, from code: `Declaration(catalogue=[meridian.DatasetDeclaration(
   key="daily", vendor=..., data_types=["meridian.v1.Price"], modes=["pull"],
@@ -224,8 +229,60 @@ and subscribe to comes from the roles `pyproject.toml` declares under
   want_withdrawn=...)`, record against each (`want_id=`) or decline it per
   subject (`plugin.decline_want`). Its pages show its connection and its
   datasets, never a price: prices are the reading roles'. Hold it to the
-  suite: `meridian.suites.run("dgm", producers)` on synthetic exchanges, each
+  suite: `meridian.suites.run("data", producers)` on synthetic exchanges, each
   case mapped to the plugin's own conversion.
+- **A data plugin streaming trades and quotes records them as its source states
+  them, converted at the edge.** Declare them in a live dataset apart
+  (`data_types=["meridian.v1.Trade", "meridian.v1.Quote"]`, `modes=["stream"]`)
+  and record in batches of at most 500 (`plugin.record_trades`,
+  `plugin.record_quotes`), keyed by UTC instants with no `business_date`. A
+  trade carries its `meridian.TradeAttributes` in the platform's words,
+  converted from the source's condition codes (a code with no conversion
+  kept as reported in `meta.unconverted`, never guessed), and its
+  `aggressor`, the side that took liquidity: where the source names the
+  resting order's side, record the other; where it says nothing, leave it
+  unset. A withdrawn trade is a new version under the same `row_key`
+  (`cancelled=True`); a quote's empty side is left unset. Keep a standing
+  want of a streamed dataset current from the stream. A case of the suite
+  about a kind of data the plugin declares it never publishes (its `about`:
+  trades, quotes, bars) is named in `not_presented`, with why; so is one
+  about a field its source never states (its `about_field`, such as a
+  trade's aggressor); every other case is mapped. On start, before resuming
+  its stream, it backfills a restart's gap
+  (`meridian.roles.data.backfill_restart`: the last trade it recorded of each
+  subject, `list_trades(..., latest_recorded=True)`, then the venue's history
+  after it), and reads which of its datasets are licensed
+  (`plugin.list_datasets()`, its `licences`).
+- **Follow the role's common part.** A person who knows a role knows any
+  plugin of it: `meridian.roles.<role>` (`data`, `custody`, `operations`,
+  `reporting`) gives each common page's record (`<Page>Read`, the page's
+  `answers=`, under the role's tool name), the role's figures in its order
+  (`figures(...)`, then the plugin's own), its common settings in their order
+  (`meridian.environment()` first where the vendor has more than one, then
+  the credentials, the role's, the vendor's, `meridian.sample_data()` last),
+  and its page templates, `meridian/roles/<role>/<page>.html`. Extend a
+  template and add the vendor's nuance only at its blocks -- `vendor_notices`,
+  `vendor_rows` (the section's title in `section`), `vendor_columns` (the row
+  in `row`, None in the head), `vendor_sections` -- never renaming,
+  reordering or dropping a common page, section, label, setting or figure.
+  Settings may be one class, `@meridian.settings`, its fields
+  `meridian.setting(...)`; the kit's patterns are macros in
+  `meridian/kit.html` (`{% import "meridian/kit.html" as kit %}`).
+- **Make every act preparable.** An agent may prepare a change for a person
+  to make rather than make it, where the deployment's admins say so: a route
+  that changes something names its check tool, a read tool taking the same
+  record and changing nothing (`checked_by="check_..."`), and the paths in
+  its record naming the accounts it touches (`accounts=["account_id"]`); the
+  SDK fills the page it is made on. A page opened from a prepared change
+  reads it (`await request.prepared()`), starts its form from its
+  `arguments_json` and says "prepared by" its preparer, with its reason as
+  text, never followed. Name no field of a record `prepare`. For an act in
+  `request.second_pair_of_eyes`, draw no Save or Confirm, only Prepare, and
+  say a second person makes it; the role templates do.
+- **Keep a person's own views per person.** A setting each person sets for
+  themselves -- a watchlist -- is declared `per_person=True`; save it for
+  them (`plugin.set_own_settings({...}, for_caller=request.caller)`) and read
+  it from their request (`request.own_settings`), never from storage.
 
 This file is for any coding agent working on the plugin, and is committed with
 it for whoever works on it next. It is the canonical one: `CLAUDE.md` and the
@@ -475,10 +532,10 @@ Ask the question that answers what you changed:
 
 | To know | Run |
 |---|---|
-| What a page shows, as the person is served it | `meridian plugin open --instance alpaca --level manage --print /` for Connection, and `--print /datasets` for Datasets, both under Manage, the only level this plugin's pages serve: any path on the plugin, at a level it is declared with |
+| What a page shows, as the person is served it | `meridian plugin open --instance alpaca --level open --print /` for Accounts under Open (`--level view` under View), and `--level manage --print /setup` for Setup under Manage: any path on the plugin, at a level it is declared with |
 | What the plugin printed or logged since your change | `meridian plugin logs --instance alpaca --since <R-1>` |
 | What the sidecar refused it, or what else happened | `meridian plugin events --instance alpaca --since <R-1> --json` |
-| What the person sees in a browser | `meridian plugin open --instance alpaca --level manage`: a link one browser opens once, at that level. Give it to the person, or open it in your browser pane |
+| What the person sees in a browser | `meridian plugin open --instance alpaca --level open`: a link one browser opens once, at that level. Give it to the person, or open it in your browser pane |
 
 `--level` is the home's button the session is opened by: `manage`, `open` or
 `view`. Name it every time. A page answers 403 at a level it is not declared

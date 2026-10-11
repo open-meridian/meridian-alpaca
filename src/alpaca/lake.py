@@ -37,7 +37,7 @@ record it was first recorded with, so the lake keeps it unchanged.
 
 **Every subject is the deployment's own instrument.** The lake wants
 instruments by the deployment's ID; the plugin asks the instrument store
-what the record is (W3.6, a dgm's from contract v18 as ruled 2026-10-10)
+what the record is (W3.6, a data plugin's from contract v18 as ruled 2026-10-10)
 -- the book's instruments came from a custodian, known by its identifiers
 -- and takes the listing's symbol from its
 identifiers: the one this source reported (`symbol` at this source) where it
@@ -85,6 +85,7 @@ from meridian import (
     TradeAttributes,
 )
 from meridian.plugin.v1 import operations_pb2 as ops
+from meridian.roles import data
 
 from . import conditions
 from .convert import (
@@ -133,6 +134,11 @@ QUOTE_EVERY_NS = NS
 RECENT_TRADES = 50_000
 #: How many rows' last sending is remembered, for an identical repeat.
 REMEMBERED_ROWS = 100_000
+#: How many declines are remembered, each for the date it was for.
+REMEMBERED_DECLINES = 100_000
+#: How far back a restart's gap is backfilled at most: the trades dataset's
+#: default retention (declaration.py), past which the lake keeps none.
+BACKFILL_NS = 2 * DAY_NS
 
 
 class Source(Protocol):
@@ -276,6 +282,17 @@ class Lake:
         self.pushed: dt.date | None = None
         self._venues: dict[str, tuple[str, int]] = {}
         self._forming_at = 0
+        #: Each subject declined, by its dataset and the date it was declined
+        #: for: a subject the source does not have (an unknown symbol, a
+        #: record with none) is declined once for that date, never again each
+        #: minute a standing want is kept current or delivered again; the
+        #: lake's decline stands for the date asked (v19). Not a source that
+        #: failed, or no key: those are asked again.
+        self.declined: OrderedDict[tuple[str, str, str], str] = OrderedDict()
+        #: What each want was answered with since start: recorded, declined.
+        self.by_want: dict[str, list[int]] = {}
+        #: The subjects whose restart gap this process has backfilled.
+        self.backfilled: set[str] = set()
         #: Whether the deployment answers this plugin's ResolveInstrument.
         self.reads_instruments = True
         self.last_error = ""
@@ -314,11 +331,11 @@ class Lake:
                 instrument_id=entity_id, as_of_ns=self.clock_ns()
             )
         except meridian.NotGranted:
-            # A runtime from before the ruling of 2026-10-10 grants a dgm no
+            # A runtime from before the ruling of 2026-10-10 grants a data plugin no
             # read of what an instrument is (W3.6): a subject it did not
             # resolve itself is not one it can name to its source. Asked
             # once, and said on the Datasets page.
-            log.warning("this dgm may not read an instrument's record; serving its own")
+            log.warning("this data plugin may not read an instrument's record; serving its own")
             self.reads_instruments = False
             return None
         if not found.found:
@@ -506,13 +523,49 @@ class Lake:
             else:
                 done = await self.plugin.record_prices(prices=list(batch), want_id=want_id)
             counts.recorded += done.recorded
+            if want_id:
+                self.by_want.setdefault(want_id, [0, 0])[0] += done.recorded + done.restated
             counts.restated += done.restated
             counts.unchanged += done.unchanged
             counts.last_recorded_at_ns = self.clock_ns()
 
-    async def _decline(self, key: str, want_id: str, subjects: Sequence[str], reason: str) -> None:
+    def today(self) -> str:
+        """Today's New York date, which a live want's decline is for."""
+        return new_york_date(self.clock_ns()).isoformat()
+
+    def settled(self, key: str, subjects: Sequence[str], day: str = "") -> list[str]:
+        """The subjects not yet declined for `day` (today, by default): those
+        worth asking the source for."""
+        day = day or self.today()
+        return [s for s in subjects if (key, s, day) not in self.declined]
+
+    async def _decline(
+        self,
+        key: str,
+        want_id: str,
+        subjects: Sequence[str],
+        reason: str,
+        *,
+        day: str = "",
+        settled: bool = True,
+    ) -> None:
+        """Decline `subjects` of a want, with a reason. A settled decline (the
+        source does not have it, or may not serve it) is sent once for the
+        date it is for -- today, or the dates a daily want named -- and a
+        subject already declined for it is left out; an unsettled one (the
+        source failed, no key yet) is sent each time."""
         if not subjects or not want_id:
             return
+        if settled:
+            day = day or self.today()
+            subjects = self.settled(key, subjects, day)
+            for subject in subjects:
+                self.declined[(key, subject, day)] = reason
+                self.declined.move_to_end((key, subject, day))
+            while len(self.declined) > REMEMBERED_DECLINES:
+                self.declined.popitem(last=False)
+            if not subjects:
+                return
         counts = self.counts[key]
         for batch in _chunks(list(subjects)):
             await self.plugin.decline_want(
@@ -522,6 +575,7 @@ class Lake:
             )
         counts.declined += len(subjects)
         counts.last_declined = reason
+        self.by_want.setdefault(want_id, [0, 0])[1] += len(subjects)
 
     async def _fetch(self, call: Callable[[], Any]) -> Any:
         """A blocking call to the source, in a thread; None where it failed,
@@ -562,6 +616,9 @@ class Lake:
         """Record the closes (or daily bars) of `subjects` over New York dates
         `first` to `last`; the subjects the source had nothing for."""
         counts = self.counts[DAILY]
+        span = first.isoformat() if first == last else f"{first}..{last}"
+        if want_id:
+            subjects = self.settled(DAILY, subjects, span)
         symbols: dict[str, str] = {}
         uncovered: list[str] = []
         for subject in subjects:
@@ -570,20 +627,20 @@ class Lake:
                 uncovered.append(subject)
             else:
                 symbols[subject] = symbol
-        await self._decline(DAILY, want_id, uncovered, "not_covered")
+        await self._decline(DAILY, want_id, uncovered, "not_covered", day=span)
         today = new_york_date(self.clock_ns())
         if last < HISTORY_FROM or first > today:
             reason = "beyond_history" if last < HISTORY_FROM else "source_silent"
-            await self._decline(DAILY, want_id, list(symbols), reason)
+            await self._decline(DAILY, want_id, list(symbols), reason, day=span)
             return list(symbols)
         if not symbols or self.source is None:
-            await self._decline(DAILY, want_id, list(symbols), "source_silent")
+            await self._decline(DAILY, want_id, list(symbols), "source_silent", settled=False)
             return list(symbols)
         source = self.source
         wanted = sorted(set(symbols.values()))
         bars = await self._fetch(lambda: source.daily(wanted, max(first, HISTORY_FROM), last))
         if bars is None:
-            await self._decline(DAILY, want_id, list(symbols), "source_silent")
+            await self._decline(DAILY, want_id, list(symbols), "source_silent", settled=False)
             return list(symbols)
         by_symbol: dict[str, list[DailyBar]] = {}
         for bar in bars:
@@ -616,7 +673,7 @@ class Lake:
                     self.forming.pop(forming, None)
         if rows:
             await self._record(DAILY, data_type, rows, want_id)
-        await self._decline(DAILY, want_id, silent, "source_silent")
+        await self._decline(DAILY, want_id, silent, "source_silent", day=span)
         return silent
 
     # ── Live ─────────────────────────────────────────────────────────────
@@ -625,7 +682,10 @@ class Lake:
         self, subjects: Sequence[str], kinds: Sequence[str] = LIVE_KINDS, want_id: str = ""
     ) -> list[str]:
         """Record the latest live prices of `subjects`; those the source had
-        nothing for."""
+        nothing for. A subject declined today is not asked again today."""
+        subjects = self.settled(LIVE, subjects)
+        if not subjects:
+            return []
         symbols: dict[str, str] = {}
         uncovered: list[str] = []
         for subject in subjects:
@@ -636,13 +696,13 @@ class Lake:
                 symbols[subject] = symbol
         await self._decline(LIVE, want_id, uncovered, "not_covered")
         if not symbols or self.source is None:
-            await self._decline(LIVE, want_id, list(symbols), "source_silent")
+            await self._decline(LIVE, want_id, list(symbols), "source_silent", settled=False)
             return list(symbols)
         source = self.source
         wanted = sorted(set(symbols.values()))
         quoted = await self._fetch(lambda: source.live(wanted))
         if quoted is None:
-            await self._decline(LIVE, want_id, list(symbols), "source_silent")
+            await self._decline(LIVE, want_id, list(symbols), "source_silent", settled=False)
             return list(symbols)
         counts = self.counts[LIVE]
         by_symbol: dict[str, list[Quoted]] = {}
@@ -681,7 +741,7 @@ class Lake:
             ok_kind = want.data_type == BAR or not kinds or "close" in kinds
             ok_interval = want.data_type != BAR or want.interval_ns in (0, DAY_NS)
             if not (ok_type and ok_kind and ok_interval):
-                await self._decline(DAILY, want.want_id, subjects, "not_covered")
+                await self._decline(DAILY, want.want_id, subjects, "not_covered", settled=False)
                 return
             first, last, latest = self._days_wanted(want)
             await self.daily(
@@ -695,7 +755,7 @@ class Lake:
             return
         if key == TRADES:
             if want.data_type != TRADE:
-                await self._decline(TRADES, want.want_id, subjects, "not_covered")
+                await self._decline(TRADES, want.want_id, subjects, "not_covered", settled=False)
                 return
             if want.standing:
                 await self.stand(want, subjects)
@@ -711,7 +771,7 @@ class Lake:
             return
         live_kinds = tuple(k for k in (kinds or LIVE_KINDS) if k in LIVE_KINDS)
         if want.data_type != PRICE or not live_kinds:
-            await self._decline(LIVE, want.want_id, subjects, "not_covered")
+            await self._decline(LIVE, want.want_id, subjects, "not_covered", settled=False)
             return
         await self.live(subjects, live_kinds, want.want_id)
         if want.standing:
@@ -740,6 +800,7 @@ class Lake:
             (covered if await self.symbol_of(subject) else uncovered).append(subject)
         if key == TRADES:
             await self._decline(TRADES, want.want_id, uncovered, "not_covered")
+            await self.backfill(covered)
         self.standing[want.want_id] = Standing(
             want.want_id,
             tuple(covered if key == TRADES else subjects),
@@ -750,7 +811,49 @@ class Lake:
         )
         past = self.restream()
         over = [s for s in covered if self.products.symbols.get(s) in past]
-        await self._decline(key, want.want_id, over, "not_entitled")
+        # Past what one session may stream: settled for today's stream
+        # alone, so the same subject's prices are still asked.
+        await self._decline(key, want.want_id, over, "not_entitled", day=f"{self.today()}:stream")
+
+    async def backfill(self, subjects: Sequence[str]) -> int:
+        """A restart's gap (contract v20, W10.6), before the stream resumes:
+        for each subject streamed that this process has not backfilled, the
+        last trade this instance recorded of it, read from the lake, and the
+        trades Alpaca's history states since, recorded (a trade recorded
+        again is answered unchanged by its row key). Alpaca's history reaches
+        back years; the gap is read back two days at most, the trades
+        dataset's default retention. How many trades were sent."""
+        fresh = [s for s in subjects if s not in self.backfilled]
+        if not fresh or self.source is None:
+            return 0
+        self.backfilled.update(fresh)
+        try:
+            sent = await data.backfill_restart(self.plugin, fresh, self._history)
+        except meridian.MeridianError as failed:
+            self.last_error = f"the restart's gap was not backfilled: {failed}"[:300]
+            log.warning("%s", self.last_error)
+            return 0
+        self.counts[TRADES].caught_up += sent
+        return sent
+
+    async def _history(self, last: ops.Trade) -> list[Trade]:
+        """The trades Alpaca states of `last`'s subject since it, as rows."""
+        subject = last.meta.subjects[0].entity_id if last.meta.subjects else ""
+        symbol = self.products.symbols.get(subject)
+        if not symbol or self.source is None:
+            return []
+        since, now = last.meta.valid_from_ns, self.clock_ns()
+        source = self.source
+        found = await self._fetch(
+            lambda: source.trades([symbol], max(since, now - BACKFILL_NS), now)
+        )
+        rows: list[Trade] = []
+        for stated in found or []:
+            if stated.symbol == symbol and stated.at_ns >= since:
+                row = await self.trade_row(stated, subject)
+                if row is not None:
+                    rows.append(row)
+        return rows
 
     def restream(self) -> set[str]:
         """Stream the listings under the standing wants, in the order they
@@ -845,13 +948,13 @@ class Lake:
         await self._decline(TRADES, want_id, uncovered, "not_covered")
         now = self.clock_ns()
         if not symbols or self.source is None or not from_ns or from_ns >= now:
-            await self._decline(TRADES, want_id, list(symbols), "source_silent")
+            await self._decline(TRADES, want_id, list(symbols), "source_silent", settled=False)
             return list(symbols)
         source, wanted = self.source, sorted(set(symbols.values()))
         end = min(until_ns or now, now)
         found = await self._fetch(lambda: source.trades(wanted, from_ns, end))
         if found is None:
-            await self._decline(TRADES, want_id, list(symbols), "source_silent")
+            await self._decline(TRADES, want_id, list(symbols), "source_silent", settled=False)
             return list(symbols)
         rows = [
             row
@@ -868,7 +971,11 @@ class Lake:
 
     async def quotes_now(self, subjects: Sequence[str], want_id: str = "") -> list[str]:
         """Record the latest quote of `subjects`, from Alpaca's latest quotes;
-        the subjects it had nothing for."""
+        the subjects it had nothing for. A subject declined today is not
+        asked again today."""
+        subjects = self.settled(LIVE, subjects)
+        if not subjects:
+            return []
         symbols: dict[str, str] = {}
         uncovered: list[str] = []
         for subject in subjects:
@@ -879,12 +986,12 @@ class Lake:
                 symbols[subject] = symbol
         await self._decline(LIVE, want_id, uncovered, "not_covered")
         if not symbols or self.source is None:
-            await self._decline(LIVE, want_id, list(symbols), "source_silent")
+            await self._decline(LIVE, want_id, list(symbols), "source_silent", settled=False)
             return list(symbols)
         source, wanted = self.source, sorted(set(symbols.values()))
         found = await self._fetch(lambda: source.quotes(wanted))
         if found is None:
-            await self._decline(LIVE, want_id, list(symbols), "source_silent")
+            await self._decline(LIVE, want_id, list(symbols), "source_silent", settled=False)
             return list(symbols)
         rows = [
             row

@@ -1,4 +1,4 @@
-"""`make e2e`: the plugin on core's plugin harness, in synthetic mode, with no
+"""`make e2e`: the plugin on core's plugin harness, on sample data, with no
 key (the harness's README; plans/the-lake-prices-the-book, row 8). Its
 recorded responses are the synthetic exchange shaped on Alpaca's
 documented and recorded responses (src/alpaca/exchanges/exchange.json);
@@ -23,7 +23,7 @@ whatever reads prices, from the same image.
    none), its row keyed in the one spelling.
 5. Another source's record: TQQQ, known to the deployment only as a
    custodian's book holds it (its CUSIP and the custodian's symbol), is
-   wanted; the plugin reads the record (W3.6, a dgm's from contract v18 as
+   wanted; the plugin reads the record (W3.6, a data plugin's from contract v18 as
    ruled 2026-10-10), finds its own symbol and records the close against
    the want: 82.37, keyed in Alpaca's spelling.
 6. Live, on a venue the deployment does not hold: SPY's last price, from
@@ -40,14 +40,14 @@ whatever reads prices, from the same image.
    conversion kept as reported, its eligibilities not known.
 6d. Caught up from the lake: the trades recorded after the watermark the
    last read said, none read twice.
-7. Parity: the plugin's pages, Connection and Datasets, read under Manage and
-   through `/mcp` as `alpaca__read_connection` and `alpaca__read_datasets`,
-   the same answers, the stream's session among them; neither shows a
-   price.
+7. Parity: the plugin's pages, Connection and Datasets, the data role's
+   (contract v20), read under Manage and through `/mcp` as
+   `alpaca__read_connection` and `alpaca__read_datasets`, the same answers
+   under the role's names, the stream's session among Alpaca's own; neither
+   shows a price.
 8. Storage: the plugin's container made again keeps which listing each
-   subject is, in the storage the deployment grants it. (It does not stream
-   again: contract v19 gives a dgm no read of the standing wants, and the
-   lake does not ask again for one that stands.)
+   subject is, in the storage the deployment grants it; and (8b) it reads on
+   start that each of its datasets is licensed, as Datasets then says.
 9. `store lake`: each row as recorded, numbered with no holes, the wants
    answered and declined, the venue's miss.
 
@@ -161,7 +161,7 @@ def run():
     compose("up", "-d")
     for instance in ("alpaca", "reader"):
         runner("ready", "--instance", instance)
-    runner("settings", "synthetic=true")
+    runner("settings", "sample_data=true")
     runner("grant", "--level", "admin")
     runner("grant", "--instance", "reader", "--level", "read", "--role", "reporting")
     runner("mcp", "connect", "--covers", "deployment_admin", "--covers", "alpaca:admin")
@@ -289,21 +289,25 @@ def run():
     listed_tools = runner("mcp", "list").split()
     for tool in ("alpaca__read_connection", "alpaca__read_datasets"):
         must(tool in listed_tools, f"step 7, {tool} is offered: {listed_tools}")
+    # The data role's common fields, under its names, with Alpaca's beside.
     connection = call("alpaca__read_connection", {}, "unchanged")["data"]
-    must(connection["mode"] == "synthetic" and connection["daily_feed"] == "sip",
+    must(connection["mode"] == "Sample data" and connection["daily_feed"] == "sip"
+         and [c["label"] for c in connection["credentials"]] == ["API key ID", "API secret key"],
          f"step 7, read_connection: {connection}")
-    must(connection["sessions"] and connection["sessions"][0]["state"] == "streaming",
-         f"step 7, the stream's session: {connection['sessions']}")
+    must(connection["sessions"] == 1 and connection["stream"]["state"] == "streaming",
+         f"step 7, the stream's session: {connection['stream']}")
     datasets = call("alpaca__read_datasets", {}, "unchanged")["data"]
-    by_key = {d["key"]: d for d in datasets["datasets"]}
+    by_key = {d["key"]: d for d in datasets["served"]}
     must(by_key["daily"]["recorded"] >= 4
          and by_key["live"]["recorded"] >= 1 and datasets["listings"] == 4
          and datasets["reads_instruments"] is True and datasets["streamed"] >= 2
-         and (RECORDED or next(d for d in datasets["datasets"] if d["key"] == "trades")["recorded"] >= 3),
+         and (RECORDED or by_key["trades"]["recorded"] >= 3),
          f"step 7, read_datasets: {datasets}")
     shown = page("alpaca", "admin", "/datasets")
-    must("alpaca:daily" in shown and "573.78" not in shown, "step 7, the Datasets page shows no price")
-    page("alpaca", "admin", "/")
+    must("alpaca:daily" in shown and "573.78" not in shown and "<h2>Served</h2>" in shown,
+         "step 7, the Datasets page, the role's, shows no price")
+    shown = page("alpaca", "admin", "/")
+    must("<h2>Key</h2>" in shown and "<h2>Limits and use</h2>" in shown, "step 7, the role's Connection")
 
     # 8. Storage: which listing each subject is, kept across a new container.
     compose("up", "-d", "--no-deps", "--force-recreate", "alpaca")
@@ -315,6 +319,13 @@ def run():
          and sorted(products.values()) == ["BRK.B", "SPY", "TQQQ", "TQQQ"],
          f"step 8, the product map kept: {kept}")
     runner("ready", "--instance", "alpaca")
+
+    # 8b. Its datasets' licences, read on start (contract v20): each one
+    # licensed in step 2 said so on Datasets.
+    def licensed():
+        served = call("alpaca__read_datasets", {}, "unchanged")["data"]["served"]
+        return served if all(s["licensed"] for s in served) else None
+    until(90, licensed, "step 8b, the licences were never read")
 
     # 9. The store.
     lines = compose("run", "--rm", "-T", "store", "lake").stdout.split("\n")
@@ -340,14 +351,14 @@ def run():
          f"step 9, the trades numbered from 1 with no holes: {numbered[:20]}")
 
     took = int(time.time() - started)
-    print(f"{NAME} OK in {took}s on the plugin harness, synthetic, no key: the three datasets listed as "
+    print(f"{NAME} OK in {took}s on the plugin harness, sample data, no key: the three datasets listed as "
           "declared, Alpaca's personal-use terms their default licence; licensed and the reader "
           "entitled; SPY's 2026-10-08 close wanted and recorded against the want (573.78, "
           "consolidated, a plain date, published at the close); BRK.B's close and bar (no VWAP); "
           "another source's record read and its close recorded (82.37); SPY's "
           "last on IEX with the venue kept as reported and the miss counted; Connection and "
-          "Datasets read under Manage and through /mcp alike, no price shown; the product map "
-          "kept across a new container; `store lake` numbered with no holes; quotes as a standing want, streamed; trades streamed and kept, their "
+          "Datasets, the data role's, read under Manage and through /mcp alike, no price shown; "
+          "the product map kept across a new container, its licences read on start; `store lake` numbered with no holes; quotes as a standing want, streamed; trades streamed and kept, their "
           "attributes converted, caught up after the watermark")
 
 

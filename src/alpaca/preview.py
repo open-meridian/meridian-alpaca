@@ -3,9 +3,10 @@ file: for looking at the pages without a deployment.
 
     python -m alpaca.preview datasets > preview/datasets.html
 
-The page is `connection` (the default), `datasets` or `connection-no-key`.
+The page is `connection` (the default), `datasets`, or either with no key
+(`connection-no-key`, `datasets-no-key`): the role's "not set up yet" states.
 Each is served by its own view, as the sidecar would ask it, over the
-built-in synthetic exchange: a week of closes recorded for the exchange's
+built-in recorded exchange, on sample data: a week of closes recorded for the exchange's
 listings, a cycle of the synthetic stream's trades and quotes, standing
 wants kept current and streamed (enough of them to page and search), and a
 venue not held. It links
@@ -95,26 +96,19 @@ def synthetic_state(root: Path) -> State:
     held.state, held.feed, held.subscribed = "streaming", "iex", len(lake.streamed)
     held.opened, held.reconnects, held.messages, held.since_ns = 2, 1, 7, NOW
     return State(
-        config=Config(synthetic=True), lake=lake, source=source, alpaca=alpaca, streamer=streamer
+        config=Config(sample_data=True), lake=lake, source=source, alpaca=alpaca, streamer=streamer
     )
 
 
 def main(argv: list[str]) -> int:
     tab = argv[0] if argv else "connection"
+    paths = {"connection": CONNECTION, "datasets": DATASETS}
+    path = paths.get(tab.removesuffix("-no-key"))
+    if path is None:
+        print(f"no page {tab!r}: connection, datasets, or either -no-key", file=sys.stderr)
+        return 2
     with tempfile.TemporaryDirectory() as held:
-        path: str | None
-        if tab == "connection-no-key":
-            use(State())
-            path = CONNECTION
-        else:
-            use(synthetic_state(Path(held)))
-            path = {"connection": CONNECTION, "datasets": DATASETS}.get(tab)
-            if path is None:
-                print(
-                    f"no page {tab!r}: connection, datasets or connection-no-key", file=sys.stderr
-                )
-                return 2
-        assert path is not None
+        use(State() if tab.endswith("-no-key") else synthetic_state(Path(held)))
         answer = PageClient(pages).get(path, "admin")
         sys.stdout.write(answer.text)
     return 0 if answer.status == 200 else 1

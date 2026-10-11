@@ -23,9 +23,14 @@ at most three times, each counted for the Connection page.
 **Entitlements.** A free account gets IEX in real time, and SIP only past its
 latest 15 minutes; SIP in real time needs Algo Trader Plus. Alpaca answers
 403 to a request past what the key may ask. `entitlements()` asks once for
-each and says which answered. The daily dataset is SIP's history (the
-product owner's choice, 2026-10-04); the live one SIP's where the key has it
-in real time, else IEX's.
+each and says which answered. SIP in real time is asked as Alpaca restricts
+it, by SIP's trades of the last minute, which a free or a paper account's
+key is refused ("subscription does not permit querying recent SIP data"),
+and never by a latest quote, which says nothing of the plan; a refusal
+there is an answer, not the plugin's last error. The daily dataset is SIP's
+history (the product owner's choice, 2026-10-04); the live one -- latest
+quotes and trades, and the stream -- SIP's only where the key has it in
+real time, else IEX's.
 
 **Every response is a raw record first** (raw.py), and a body is parsed with
 Decimals: Alpaca's prices are JSON numbers, which become Decimals from their
@@ -39,6 +44,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -48,7 +54,7 @@ from .raw import RawStore
 from .settings import Credentials
 
 DATA = "https://data.alpaca.markets"
-USER_AGENT = "meridian-alpaca/0.3.0 (+https://open-meridian.dev)"
+USER_AGENT = "meridian-alpaca/0.4.0 (+https://open-meridian.dev)"
 #: Alpaca's market data stream, a feed's name after it (`/v2/iex`, `/v2/sip`).
 STREAM = "wss://stream.data.alpaca.markets/v2"
 NS = 1_000_000_000
@@ -189,6 +195,14 @@ class Usage:
     last_status: int = 0
     last_error: str = ""
     by_call: dict[str, int] = field(default_factory=dict)
+    #: When each call of the last minute was made, for "Rate use".
+    recent: deque[int] = field(default_factory=deque)
+
+    def last_minute(self, now_ns: int) -> int:
+        """How many calls were made in the minute before `now_ns`."""
+        while self.recent and self.recent[0] < now_ns - 60 * NS:
+            self.recent.popleft()
+        return len(self.recent)
 
 
 class Alpaca:
@@ -252,6 +266,8 @@ class Alpaca:
             self.usage.by_call[call] = self.usage.by_call.get(call, 0) + 1
             answer = self.transport(url, headers)
             received = self.clock_ns()
+            self.usage.recent.append(received)
+            self.usage.last_minute(received)
             self.usage.last_call_at_ns, self.usage.last_status = received, answer.status
             text = self._redacted(answer.body.decode("utf-8", errors="replace"))
             raw_key = self._keep(
@@ -360,11 +376,25 @@ class Alpaca:
             "latest quotes", f"quotes-latest/{feed}", "/v2/stocks/quotes/latest", params
         )
 
+    def recent_sip_trade(self, symbol: str = PROBE_SYMBOL) -> Fetched:
+        """SIP's trades of `symbol` over the last minute, at most one: what
+        only a key with SIP in real time (Algo Trader Plus) is answered."""
+        now = self.clock_ns()
+        params = {
+            "symbols": symbol,
+            "start": _iso_ns(now - 60 * NS),
+            "end": _iso_ns(now),
+            "limit": "1",
+            "feed": SIP,
+        }
+        return self.get("trades", f"trades/{SIP}", "/v2/stocks/trades", params)
+
     def entitlements(self, symbol: str = PROBE_SYMBOL) -> Entitlements:
         """Ask once for each feed the key might have, and say which answered:
         IEX's latest quote (every account), SIP's daily bars ending 16
         minutes ago (every account, past the free plan's restriction), and
-        SIP's latest quote (Algo Trader Plus). Raises NoKey without a key."""
+        SIP's trades of the last minute (Algo Trader Plus alone: a free or a
+        paper account's key is refused them). Raises NoKey without a key."""
         try:
             self.latest_quotes([symbol], IEX)
         except VendorError as refused:
@@ -375,17 +405,19 @@ class Alpaca:
         week_ago = time.strftime("%Y-%m-%d", time.gmtime(now // NS - 10 * 86_400))
         today = time.strftime("%Y-%m-%d", time.gmtime(now // NS))
         sip_history = self._entitled(lambda: self.daily_bars([symbol], week_ago, today, SIP, 1))
-        sip_live = self._entitled(lambda: self.latest_quotes([symbol], SIP))
+        sip_live = self._entitled(lambda: self.recent_sip_trade(symbol))
         return Entitlements(answered=True, iex=True, sip_history=sip_history, sip_live=sip_live)
 
-    @staticmethod
-    def _entitled(ask: Callable[[], object]) -> bool:
-        """Whether Alpaca answered, or refused with 403: not entitled."""
+    def _entitled(self, ask: Callable[[], object]) -> bool:
+        """Whether Alpaca answered, or refused with 403: not entitled, which
+        is an answer about the key and not the plugin's last error."""
+        before = self.usage.last_error
         try:
             ask()
         except VendorError as refused:
             if refused.status != 403:
                 raise
+            self.usage.last_error = before
             return False
         return True
 

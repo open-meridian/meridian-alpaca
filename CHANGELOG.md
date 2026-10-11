@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+- On open-meridian 0.24.0 (contract 20): the role is `data` (a data
+  plugin), `dgm` until now.
+- Connection and Datasets are the data role's pages
+  (spec/plugin-pages-follow-their-role): Connection's "Key", "Limits and
+  use" and "Stream", Datasets' "Served", "Wants" and "Subjects", in the
+  role's order and words, with Alpaca's feeds, stream session, feed column
+  and "Kept current" at the role's extension points; the "not set up yet"
+  states ("No key yet", linking to Settings; "No wants yet"); and
+  `read_connection` and `read_datasets` answering the role's common fields
+  with Alpaca's beside. The data role's figures on the Summary.
+- Datasets says whether a deployment admin has licensed each dataset,
+  read from the deployment on start and every minute.
+- A restart's gap backfilled: the first time a listing's trades are wanted
+  after a restart, the trades since the last one recorded, from Alpaca's
+  history, two days back at most.
+- The setting `synthetic` is `sample_data` (Sample data), the SDK's.
+- Fixed: whether the key has SIP in real time is asked by SIP's trades of
+  the last minute, not by a latest quote, and a SIP refusal falls back to
+  IEX: the latest quotes come from the feed the key is entitled to (IEX on
+  a free or a paper key). The refused probe is no longer the Connection
+  page's last error.
+- Fixed: a symbol Alpaca has nothing for (TCH4) is declined once for the
+  date, not asked and declined again every minute.
+- The data suite's v20 cases: a trade recorded, a restart's gap backfilled
+  and its datasets' licences read, presented; the taker's side and the
+  maker's side inverted not presented (Alpaca states no aggressor).
+
 ## 0.3.0 (unreleased)
 
 - On open-meridian 0.23.0 (contract 19): the lake's trades and quotes.
