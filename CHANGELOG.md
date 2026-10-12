@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+- On open-meridian 0.25.0 (contract 21): the pins moved as the SDK's
+  0.24.0 to 0.25.0 step (`meridian plugin migrate --to 0.25.0`) moves them,
+  rewriting nothing. Contract 21 lets a plugin's
+  autonomous work act as its role's service account; this plugin acts on
+  nothing of the deployment's by itself, so nothing else changes.
+- AGENTS.md says how a plugin acts on its own: only as its role's service
+  account, through `meridian.runs_as(role)`.
+
 ## 0.4.0 (unreleased)
 
 - On open-meridian 0.24.0 (contract 20): the role is `data` (a data

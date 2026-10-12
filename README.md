@@ -11,8 +11,8 @@ pass the same suite of the SDK, unchanged. Alpaca is also a broker; this
 repository is named for the vendor so that a `custody` or `connectivity` role can
 arrive here later without a rename.
 
-**Status:** 0.4.0, on open-meridian 0.24.0 (contract 20), proven locally
-against core v20's runtime and plugin harness, neither released yet. Not
+**Status:** 0.5.0, on open-meridian 0.25.0 (contract 21), proven locally
+against core v21's runtime and plugin harness, neither released yet. Not
 released.
 
 ## What it serves
