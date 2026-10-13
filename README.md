@@ -1,19 +1,22 @@
 # meridian-alpaca
 
 Alpaca's US equity and ETF market data in an [Open Meridian](https://open-meridian.dev)
-deployment, as a data plugin (the `data` role): daily closes and bars, live prices and
-quotes, and trades, put into the deployment's lake for the plugins that
-value and show a book.
+deployment, and the orders a desk places at Alpaca. Two roles:
+
+- `data`: daily closes and bars, live prices and quotes, and trades, put
+  into the deployment's lake for the plugins that value and show a book.
+- `connectivity` (from 0.7.0, contract 22): the placements a desk's `ems`
+  names this instance on, placed at Alpaca's Trading API, paper or live,
+  and what Alpaca did with them: acknowledgements, rejections, replaces,
+  cancels, fills with their settlement dates, and busts.
 
 It is the first half of the retail pair, beside
 [meridian-tradier](https://github.com/open-meridian/plugin-tradier): both
-pass the same suite of the SDK, unchanged. Alpaca is also a broker; this
-repository is named for the vendor so that a `custody` or `connectivity` role can
-arrive here later without a rename.
+pass the same suites of the SDK, unchanged. A `custody` role, Alpaca's view
+of the account, follows in the next version.
 
-**Status:** 0.6.0, on open-meridian 0.26.0 (contract 22), proven locally
-against core v21's runtime and plugin harness, neither released yet. Not
-released.
+**Status:** 0.7.0, on open-meridian 0.26.0 (contract 22), proven locally
+against core v22's runtime and plugin harness (8774368). Not released.
 
 ## What it serves
 
@@ -123,19 +126,74 @@ entered.
 ## Entering the key
 
 The plugin needs an Alpaca account's API key: a free account's, or a paper
-account's, which does not expire.
+account's, which does not expire. Market data reads the same with either;
+the key decides which account connectivity trades.
 
-1. In Alpaca's dashboard, under **API keys**, generate a key. Alpaca shows
-   the secret key once.
+1. In Alpaca's dashboard, under **API keys**, generate a key: the paper
+   account's to trade with simulated money, the live account's to trade
+   for real. Alpaca shows the secret key once.
 2. In the deployment, open the plugin under **Manage**, then **Settings**.
-3. Enter the **API key ID** and the **API secret key**. Both are secret
+3. Choose **Environment**: **Sandbox** is Alpaca's paper trading API
+   (paper-api.alpaca.markets), simulated money; **Live** is its live
+   Trading API (api.alpaca.markets). It must match the key.
+4. Enter the **API key ID** and the **API secret key**. Both are secret
    settings: once saved they are never shown again, logged, put on a page or
    sent anywhere but Alpaca.
-4. Open **Connection**: under **Key** it says whether each part is set
+5. Open **Connection**: under **Key** it says whether each part is set
    (never its value), whether Alpaca answered, and which feeds the key is
    entitled to. With no key it says "No key yet" and links to Settings.
-5. On the deployment's **Data sources** page, license `daily`, `live` and
+6. On the deployment's **Data sources** page, license `daily`, `live` and
    `trades`, and entitle the plugins that read prices, trades and quotes.
+
+## Trading at Alpaca
+
+With the `connectivity` role (granted by a deployment admin, as every role
+is), the plugin is a desk's connection to Alpaca:
+
+1. A deployment admin makes the plugin available to the desk's `ems`, and
+   the `ems`'s admin links it and maps a book account to the account's
+   venue account code: Alpaca's account number, shown on **Trading**.
+2. **Trading** (under Manage, the connectivity role's admin) says plainly
+   which environment the account is in -- **Paper**, simulated money, or
+   **Live** -- and each account the key reaches. A new account is
+   **read-only**: every placement on it is rejected `unsupported`, nothing
+   sent, until the connectivity role's admin presses **Enable trading**
+   (`enable_trading`, checked by `check_enable_trading`). Its catalogue is
+   then published: `market` and `limit`, each `day`, `gtc`, `ioc` or `fok`;
+   `stop` and `stop_limit`, each `day` or `gtc`. Alpaca takes no
+   good-till-date order.
+3. Each placement naming the instance is placed at Alpaca with the
+   placement's ID as its client order ID. Alpaca's trade updates stream
+   reports each fill as Alpaca states it, and the plugin reads the orders
+   every 15 seconds besides, so a fill missed while the stream was down is
+   found, derived to the same ID. Every fill carries the deployment's
+   settlement date for it (Alpaca states none), and waits for it rather than
+   go with a guess.
+4. A replace the desk asks for is Alpaca's `PATCH /v2/orders/{id}`: Alpaca
+   puts a new order in the old one's place, which the plugin follows, the
+   old one's fills counted on. A cancel is Alpaca's `DELETE`.
+5. A pause on the plugin, the account or All accounts holds new placements
+   back; a stop also cancels at Alpaca what it is working, each cancel
+   reported naming the stop. A placement sent but not answered is asked
+   about on the next read, never sent again, across a restart too
+   (`trading/sent.json` in the plugin's storage).
+
+An order the account holder places at Alpaca outside the platform is left
+alone: no order is recorded and no fill reported (venue-originated fills are
+contract 23's). Every exchange with the Trading API is kept as a raw record
+of the `trading` kind (seven years by default, an admin's setting, archived,
+kept or deleted past it), and each read of the orders under `responses` (30
+days); **Raw records** (Open and View) follows a fact's reference to the
+record, for a person who may read the account.
+
+What Alpaca never states, the plugin does not invent: a fill's place of
+execution, a locate, and a fee charged on a placement that filled nothing.
+The connectivity suite's case for a charge is therefore not produced, until
+the product owner rules on it.
+
+**The live paper run is the product owner's, by hand.** The tests and the
+e2e trade with a simulated brokerage (src/alpaca/synthetic_broker.py) and
+never reach Alpaca's paper or live trading API.
 
 ## Checking it live
 
@@ -161,8 +219,8 @@ machine; CI never runs it.
 
 ## Building it
 
-    make ci-local        lint, the tests (the SDK's data suite among them), meridian plugin check, the image, and the e2e
-    make e2e             the plugin on core's plugin harness, on sample data, with no key (e2e/run.py)
+    make ci-local        lint, the tests (the SDK's data and connectivity suites among them), meridian plugin check, the image, and the e2e
+    make e2e             the plugin on core's plugin harness, on sample data, with no key (e2e/run.py), the order path among it (e2e/orders.py)
     make preview         the pages on sample data, for a browser beside the kit
     make install-hooks   push runs ci-local first
 

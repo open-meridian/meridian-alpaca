@@ -1,0 +1,12 @@
+{#- Raw records, at Open and View: custody's, then the record a row's
+    reference names, as Alpaca sent it, for a person who may read its
+    account. -#}
+{% extends "meridian/roles/custody/raw_records.html" %}
+{% block vendor_sections %}
+{% if record %}
+<section class="panel">
+<h2>The record</h2>
+<details open><summary><code>{{ key }}</code></summary><pre class="wrap">{{ record }}</pre></details>
+</section>
+{% endif %}
+{% endblock %}

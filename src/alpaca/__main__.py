@@ -17,6 +17,13 @@ breaks and catching up the gap; and, the first time a listing's trades are
 wanted after a restart, backfilling what it missed while stopped from the
 last trade it recorded (lake.py, `backfill_restart`).
 
+From 0.7.0 it is also the account's connection for orders, where the
+deployment launched it with `connectivity`: it hears each placement naming
+its instance and places it at Alpaca's Trading API in the environment
+chosen (paper or live), hears Alpaca's trade updates and reads the orders,
+honouring the firm's pauses and stops (trading.py, updates.py). Sample data
+trades with a simulated brokerage (synthetic_broker.py), never Alpaca.
+
 It holds nothing it cannot lose: what each subject's symbol is, and every
 raw response, are in the storage the deployment grants it (decisions/028);
 a restart reads them back and hears the lake again. The key arrives as two
@@ -32,13 +39,17 @@ import os
 import signal
 import tempfile
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import meridian
 from meridian import edge
 
+from .broker import Broker, base_for, stream_for
 from .declaration import DECLARATION
+from .kinds import Store, tend, windows_from
+from .kinds import root as kinds_root
 from .lake import Lake, Products
 from .page import TITLE, State, figures, pages, serve
 from .raw import RawStore, storage_root
@@ -46,7 +57,11 @@ from .settings import DECLARED, Config, config_from
 from .source import AlpacaSource
 from .stream import AlpacaFeed, Feed, Streamer, symbol_limit
 from .synthetic import SyntheticFeed, SyntheticTransport, exchange
+from .synthetic_broker import SyntheticBroker
+from .trading import Noted, Trader, trading_files
+from .updates import AlpacaUpdates, SyntheticUpdates
 from .vendor import IEX, Alpaca, NoKey, VendorError, urllib_transport
+from .venue import AlpacaVenue
 
 log = logging.getLogger("alpaca")
 
@@ -54,6 +69,53 @@ log = logging.getLogger("alpaca")
 TICK_SECONDS = 15
 #: How often the datasets' licences are read again.
 LICENCES_SECONDS = 60
+#: How often connectivity reads the orders at Alpaca, beside its trade
+#: updates; and the simulated brokerage, which steps an order on each read.
+POLL_SECONDS = 15
+SYNTHETIC_POLL_SECONDS = 1
+#: How often the kinds' windows are tended between deliveries of settings.
+TEND_SECONDS = 3600
+
+
+class Account:
+    """Connectivity's client for the settings as they stand: the Trading API
+    of the environment chosen, or the simulated brokerage."""
+
+    def __init__(self, store: Store, granted: Path | None) -> None:
+        self.store, self.granted = store, granted
+        self.broker: Broker | None = None
+        self.venue: AlpacaVenue | None = None
+        self.updates: AlpacaUpdates | SyntheticUpdates | None = None
+        self._synthetic: SyntheticBroker | None = None
+        self._said: tuple[object, ...] = ()
+
+    def use(self, config: Config) -> bool:
+        """Make the client again where the settings changed what it is; True
+        where they did."""
+        said = (config.sample_data, config.environment, config.credentials)
+        if said == self._said:
+            return False
+        self._said = said
+        if config.sample_data:
+            if self._synthetic is None:
+                state = self.granted / "synthetic-venue" / "orders.json" if self.granted else None
+                self._synthetic = SyntheticBroker(lambda: datetime.now(UTC), state)
+            self.broker = Broker(
+                self.store,
+                None,
+                base_for(config.environment),
+                send=self._synthetic,
+                keyless=True,
+                synthetic=True,
+            )
+            self.updates = SyntheticUpdates(self._synthetic)
+        elif config.credentials is not None:
+            self.broker = Broker(self.store, config.credentials, base_for(config.environment))
+            self.updates = AlpacaUpdates(config.credentials, stream_for(config.environment))
+        else:
+            self.broker, self.updates = None, None
+        self.venue = AlpacaVenue(self.broker) if self.broker is not None else None
+        return True
 
 
 def source_for(config: Config, store: RawStore) -> tuple[Alpaca | None, AlpacaSource | None]:
@@ -135,16 +197,23 @@ async def licences(plugin: meridian.Plugin, state: State) -> None:
 
 
 async def watch_settings(
-    plugin: meridian.Plugin, state: State, store: RawStore, configured: asyncio.Event
+    plugin: meridian.Plugin,
+    state: State,
+    store: RawStore,
+    configured: asyncio.Event,
+    account: Account | None = None,
 ) -> None:
     async for delivered in plugin.settings():
         state.config = config_from(delivered.values)
+        state.values = dict(delivered.values)
         state.alpaca, state.source = source_for(state.config, store)
         if state.lake is not None:
             state.lake.source = state.source
             if state.config.sample_data:
                 # The built-in exchange's listings, as a source's own list.
                 await state.lake.seed(sorted(exchange()["bars"]))
+        if account is not None and account.use(state.config):
+            state.updates = account.updates
         configured.set()
         await health(plugin, state)
         if state.lake is not None:
@@ -152,6 +221,53 @@ async def watch_settings(
             state.lake.restream()
         if state.streamer is not None:
             state.streamer.restart()
+        if account is not None:
+            await tend_now(plugin, account.store, delivered.values)
+
+
+async def tend_now(plugin: meridian.Plugin, kinds: Store, values: Any) -> None:
+    """Each kind's units past its window moved as the settings say."""
+    try:
+        await tend(plugin, kinds, windows_from(values), datetime.now(UTC).date())
+    except (meridian.MeridianError, OSError) as failed:
+        log.warning("the raw records were not tended this time: %s", failed)
+
+
+async def follow_scope(plugin: meridian.Plugin, state: State) -> None:
+    """The account scope and its ems's venue account map (W11.22), on start
+    and on every change: connectivity and its pages hold it from here."""
+    async for scope in plugin.account_scope():
+        state.scope = scope
+
+
+async def trade(state: State, trader: Trader, hear: bool) -> None:
+    """Connectivity's work; a refusal it meets is said, and the rest goes on."""
+    await trader.run(
+        lambda: SYNTHETIC_POLL_SECONDS if state.config.sample_data else POLL_SECONDS,
+        hear=hear,
+    )
+
+
+async def hear_updates(account: Account, trader: Trader) -> None:
+    """The trade updates of the client as the settings stand, heard again
+    whenever the client is made again."""
+    while True:
+        updates = account.updates
+        if updates is None:
+            await asyncio.sleep(1)
+            continue
+        task = asyncio.create_task(updates.run(trader, account.store))
+        while account.updates is updates and not task.done():
+            await asyncio.sleep(1)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+
+async def tend_hourly(plugin: meridian.Plugin, state: State, kinds: Store) -> None:
+    while True:
+        await asyncio.sleep(TEND_SECONDS)
+        await tend_now(plugin, kinds, state.values)
 
 
 async def timetable(plugin: meridian.Plugin, state: State, lake: Lake) -> None:
@@ -191,46 +307,86 @@ async def run() -> None:
     port = int(os.environ.get("ALPACA_PAGE_PORT", "8000"))
     granted = edge.storage_dir()
     store = RawStore(storage_root(Path(tempfile.mkdtemp(prefix="alpaca-raw-"))))
+    kinds = Store(kinds_root())
     async with await meridian.connect(
         interface=meridian.Interface(port=port, title=TITLE, pages=pages),
         settings=DECLARED,
         declaration=DECLARATION,
     ) as plugin:
+        roles = set(plugin.identity.roles)
         log.info(
             "registered as %s, roles %s",
             plugin.identity.instance_id,
-            ", ".join(plugin.identity.roles) or "none",
+            ", ".join(sorted(roles)) or "none",
         )
         lake = Lake(plugin, None, Products(granted / "products.json" if granted else None))
-        state = State(lake=lake)
+        state = State(lake=lake, store=kinds)
         streamer = Streamer(
             lambda: feed_for(state, store), lake.heard, lake.flush, caught_up=lake.caught_up
         )
         lake.streamer = state.streamer = streamer
+        account = Account(kinds, granted)
+        if "connectivity" in roles:
+            sent, enabled = trading_files(granted)
+            state.trader = Trader(
+                plugin,
+                lambda: account.venue,
+                now=lambda: datetime.now(UTC),
+                sent=Noted(sent),
+                enabled=Noted(enabled),
+                # The venue account codes its ems mapped on it (W11.22).
+                scope=lambda: state.scope,
+            )
         configured = asyncio.Event()
         page = serve(plugin, state, port)
         tasks = [
             asyncio.create_task(
-                again(lambda: watch_settings(plugin, state, store, configured), "the settings")
+                again(
+                    lambda: watch_settings(plugin, state, store, configured, account),
+                    "the settings",
+                )
             )
         ]
         await configured.wait()
-        tasks.append(
-            asyncio.create_task(
-                again(
-                    lambda: plugin.receive(
-                        observations_wanted=lake.on_want, want_withdrawn=lake.on_withdrawn
-                    ),
-                    "hearing the lake",
+        if state.trader is not None:
+            tasks.append(
+                asyncio.create_task(again(lambda: follow_scope(plugin, state), "the scope"))
+            )
+            tasks.append(asyncio.create_task(tend_hourly(plugin, state, kinds)))
+            trader = state.trader
+            # With the data role too, its placements are heard on the one
+            # stream that hears the lake's wants (below).
+            hears = "data" not in roles
+            tasks.append(asyncio.create_task(again(lambda: trade(state, trader, hears), "trading")))
+            tasks.append(
+                asyncio.create_task(again(lambda: hear_updates(account, trader), "trade updates"))
+            )
+        if "data" in roles:
+            # With connectivity too, its placements and instructions are heard
+            # on the one stream that hears the lake's wants.
+            hearing: dict[str, Any] = {
+                "observations_wanted": lake.on_want,
+                "want_withdrawn": lake.on_withdrawn,
+            }
+            if state.trader is not None:
+                hearing["placement_updated"] = state.trader.on_placement
+                hearing["trading_instruction_changed"] = state.trader.on_instruction
+            tasks.append(
+                asyncio.create_task(
+                    again(
+                        lambda: plugin.receive(**hearing),
+                        "hearing the lake",
+                    )
                 )
             )
-        )
-        tasks.append(asyncio.create_task(again(lambda: licences(plugin, state), "the licences")))
-        tasks.append(
-            asyncio.create_task(again(lambda: timetable(plugin, state, lake), "the timetable"))
-        )
-        tasks.append(asyncio.create_task(again(streamer.run, "the stream")))
-        log.info("serving its pages on 127.0.0.1:%d, hearing the lake's wants", port)
+            tasks.append(
+                asyncio.create_task(again(lambda: licences(plugin, state), "the licences"))
+            )
+            tasks.append(
+                asyncio.create_task(again(lambda: timetable(plugin, state, lake), "the timetable"))
+            )
+            tasks.append(asyncio.create_task(again(streamer.run, "the stream")))
+        log.info("serving its pages on 127.0.0.1:%d", port)
         await stopped.wait()
         log.info("stopping")
         for task in tasks:

@@ -35,7 +35,12 @@ lost some catches up from the lake). A summary, not legal advice; the README
 says the same.
 
 **The storage**, at the edge (decisions/028): Alpaca's raw responses, every
-row's raw record, and the product map; a year kept.
+row's raw record, and the product map. From 0.7.0 connectivity keeps two
+kinds of raw record (kinds.py), each with its own window an admin of the
+plugin sets: `responses` (each read of the account and its orders, 30
+days) and `trading` (each exchange with the Trading API that places,
+replaces or cancels, seven years), both archivable. The retention is the
+longest window, the data role's raw responses kept within it.
 """
 
 from __future__ import annotations
@@ -44,12 +49,13 @@ from meridian import DatasetDeclaration, DatasetLicence
 from meridian.declaration import Declaration, Storage
 
 from .convert import DAY_END_MINUTE
+from .kinds import KINDS
 from .lake import DAILY, LIVE, LIVE_CADENCE_SECONDS, TRADES
 from .settings import DECLARED
 
 VENDOR = "Alpaca"
-#: How long a raw response is kept: the reach of a re-conversion.
-RETENTION_DAYS = 365
+#: How long a raw record is kept at the most: the longest kind's window.
+RETENTION_DAYS = max(kind.window_days for kind in KINDS)
 #: Alpaca's consolidated history reaches back to 2016.
 HISTORY_DAYS = 3650
 #: How long the lake keeps a trade by default: two days (the plan's Q40).
@@ -105,6 +111,6 @@ CATALOGUE = (
 
 DECLARATION = Declaration(
     settings=DECLARED,
-    storage=Storage(retention_days=RETENTION_DAYS),
+    storage=Storage(retention_days=RETENTION_DAYS, kinds=KINDS),
     catalogue=CATALOGUE,
 )
