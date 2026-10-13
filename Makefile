@@ -33,11 +33,12 @@ CLI_CONTEXT := $(if $(MERIDIAN_BIN),--build-context cli=$(MERIDIAN_BIN),)
 
 # The released runtime `make e2e` proves the plugin against, by tag and
 # digest, and core's plugin harness published with it, by the same commit's
-# tag and its digest: core 6202b4a, contract v21.
+# tag and its digest: core 8f03d84, contract v22,
+# by tag for now (its digest, and v22's released commit, at push time).
 # Moved together by a deliberate commit, and with the SDK when a contract version
 # changes. e2e-latest.yaml tries the runtime and harness tagged latest weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:6202b4a@sha256:854d866396de5f2f0c39b0ad3b1bd8b283f1549bb86d9684db71283988821012
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:6202b4a@sha256:f8346eadc65a5194331af2ee277dddbbdc6bcbeeca7ac196cb7ac7990bed8090
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:8f03d84
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:8f03d84
 # A developer's own recording of Alpaca's responses, for `make e2e-recorded`:
 # a directory holding exchange.json, never committed.
 RECORDED    ?=
