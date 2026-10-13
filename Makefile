@@ -37,8 +37,8 @@ CLI_CONTEXT := $(if $(MERIDIAN_BIN),--build-context cli=$(MERIDIAN_BIN),)
 # by tag for now (its digest, and v22's released commit, at push time).
 # Moved together by a deliberate commit, and with the SDK when a contract version
 # changes. e2e-latest.yaml tries the runtime and harness tagged latest weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:8f03d84
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:8f03d84
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:8774368@sha256:30bc55de3702ffa76b5a8e7c36cb0fe65aa819dd1b7d167cecdd5fe59540c5db
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:8774368@sha256:c1db335cecdc42c3eed10e916e8c600483b73eef5830e100c35411653196a5ac
 # A developer's own recording of Alpaca's responses, for `make e2e-recorded`:
 # a directory holding exchange.json, never committed.
 RECORDED    ?=
