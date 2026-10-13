@@ -3,14 +3,17 @@ against this plugin: every case mapped to the plugin's own conversion, from
 Alpaca's recorded exchange and stream, through the lake's half it runs in
 production (lake.py), against the suite's `Recorder`.
 
-Four cases are not presented, each with why (`NOT_PRESENTED`). Two are
+Six cases are not presented, each with why (`NOT_PRESENTED`). Two are
 about kinds of data Alpaca's US stock data never publishes (`about`, from
 contract v19): a currency's rate against another currency, and a crypto
 asset's price (its crypto is left to the crypto pair). Two are about a field
 its trades never state (`about_field`, from contract v20): the side that
 took liquidity (`meridian.v1.Trade.aggressor`), which the contract never
 guesses from the price -- a regular trade naming the taker's side, and a
-maker's side inverted. Every other case about trades is presented.
+maker's side inverted. And two are contract v22's calendar cases (`about`
+calendars and settlement dates): the plugin dates a bar by the session's
+close in New York as Alpaca states it, and never reads a settlement calendar
+or asks for a settlement date. Every other case about trades is presented.
 """
 
 from __future__ import annotations
@@ -56,6 +59,12 @@ NOT_PRESENTED = {
     "a-stablecoin-quote": "a data plugin of US stocks: Alpaca's crypto is the crypto pair's",
     "the-takers-side-stated": "Alpaca's stock trades never state which side took liquidity",
     "the-makers-side-inverted": "Alpaca's stock trades state neither side of a trade",
+    "reads-a-calendar": (
+        "dates each bar by the session's close as Alpaca states it: reads no settlement calendar"
+    ),
+    "asks-for-a-settlement-date": (
+        "records bars and trades as Alpaca publishes them; never computes a settlement date"
+    ),
 }
 
 #: A moment in the session, for the stream's messages.

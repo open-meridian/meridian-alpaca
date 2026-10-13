@@ -11,7 +11,7 @@ pass the same suite of the SDK, unchanged. Alpaca is also a broker; this
 repository is named for the vendor so that a `custody` or `connectivity` role can
 arrive here later without a rename.
 
-**Status:** 0.5.0, on open-meridian 0.25.0 (contract 21), proven locally
+**Status:** 0.6.0, on open-meridian 0.26.0 (contract 22), proven locally
 against core v21's runtime and plugin harness, neither released yet. Not
 released.
 
@@ -71,10 +71,12 @@ released.
   recorded of it from the lake and records what Alpaca's trade history
   states since, two days back at most (the trades' default retention),
   before it streams the listing again.
-- **The suite.** Four of its cases are not presented, each with why: a
+- **The suite.** Six of its cases are not presented, each with why: a
   currency's rate and a crypto asset's price (kinds Alpaca's stock data never
-  publishes), and the two about the side that took liquidity (a field,
-  `Trade.aggressor`, Alpaca never states).
+  publishes), the two about the side that took liquidity (a field,
+  `Trade.aggressor`, Alpaca never states), and contract v22's two calendar
+  cases: it dates each bar by the session's close as Alpaca states it, and
+  never reads a settlement calendar or asks for a settlement date.
 
 **Live data from the feed the key is entitled to.** Whether the key has SIP
 in real time is asked by SIP's trades of the last minute, which a free or a

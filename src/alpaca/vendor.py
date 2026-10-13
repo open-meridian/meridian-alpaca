@@ -54,7 +54,7 @@ from .raw import RawStore
 from .settings import Credentials
 
 DATA = "https://data.alpaca.markets"
-USER_AGENT = "meridian-alpaca/0.5.0 (+https://open-meridian.dev)"
+USER_AGENT = "meridian-alpaca/0.6.0 (+https://open-meridian.dev)"
 #: Alpaca's market data stream, a feed's name after it (`/v2/iex`, `/v2/sip`).
 STREAM = "wss://stream.data.alpaca.markets/v2"
 NS = 1_000_000_000

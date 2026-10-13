@@ -8,7 +8,7 @@
 # part of ci-local and so of the pre-push hook, takes the same steps in
 # python:3.12-slim with the same meridian.
 #
-# Until open-meridian 0.25.0 is on PyPI, this job is red on the runner: it
+# Until open-meridian 0.26.0 is on PyPI, this job is red on the runner: it
 # installs the SDK pyproject.toml pins.
 name: check
 
@@ -29,8 +29,10 @@ env:
   # The meridian whose rules the plugin is held to: the rules are compiled
   # into it. Move it deliberately, as the SDK's pin is moved, since a newer
   # one may hold a rule this plugin does not keep yet. `make check` reads it
-  # from here.
-  MERIDIAN_VERSION: 0.1.39
+  # from here. 0.1.42 holds the suites of contract v22, whose calendar cases a
+  # plugin may name not presented with why; red until it is released, and
+  # locally `make check MERIDIAN_BIN=...` tries a build of it.
+  MERIDIAN_VERSION: 0.1.42
 
 jobs:
   check:

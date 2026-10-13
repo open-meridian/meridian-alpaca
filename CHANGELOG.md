@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.0 (unreleased)
+
+- On open-meridian 0.26.0 (contract 22): the pins moved as the SDK's
+  0.25.0 to 0.26.0 step (`meridian plugin migrate --to 0.26.0`) moves them,
+  rewriting nothing. Contract 22 is the order path and settlement
+  calendars; this plugin places no order and works out no date, so nothing
+  else changes.
+- The data suite's two calendar cases (`reads-a-calendar`,
+  `asks-for-a-settlement-date`) are not presented, each with why: Alpaca's
+  bars are dated as Alpaca states them, and nothing here needs a
+  settlement calendar or a settlement date.
+- AGENTS.md says to name a declared algorithm on autonomous work, and to
+  work out a date in core (`compute_date`, `read_calendar`), never by hand.
+
 ## 0.5.0 (unreleased)
 
 - On open-meridian 0.25.0 (contract 21): the pins moved as the SDK's
