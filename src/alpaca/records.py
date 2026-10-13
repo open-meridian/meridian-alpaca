@@ -98,3 +98,54 @@ class DatasetsRead(data.DatasetsRead):
     streamed: int = 0
     past_limit: int = 0
     declined_today: int = 0
+
+
+# ── Connectivity's, from 0.7.0 ───────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AccountTrading:
+    """One account the key reaches, as connectivity trades it: its venue
+    account code, whether trading is enabled on it (read-only until the
+    connectivity role's admin enables it), the order types its catalogue
+    offers, and whether its ems has mapped it on this instance."""
+
+    venue_account_code: str
+    trading: bool = False
+    order_types: list[str] = field(default_factory=list)
+    mapped: bool = False
+
+
+@dataclass(frozen=True)
+class TradingRead:
+    """Trading, at Manage: whether the key is set (never its value), the
+    environment the account is in (Paper, simulated money, or Live, said
+    plainly, or sample data), each account and its trading, the placements
+    working, held back by a pause or a stop, and of unknown outcome, the last
+    read of the orders, the trade updates stream's state and the last error.
+    Counts and codes only: no account's data."""
+
+    credentials: list[data.Credential] = field(default_factory=list)
+    environment: str = ""
+    accounts: list[AccountTrading] = field(default_factory=list)
+    working: int = 0
+    held: int = 0
+    unknown: int = 0
+    last_poll: str = ""
+    updates: str = ""
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class TradingAsked:
+    """An account to enable trading on, by its venue account code."""
+
+    venue_account_code: str
+
+
+@dataclass(frozen=True)
+class TradingEnabled:
+    """What enabling trading came to, or would."""
+
+    venue_account_code: str
+    said: str = ""

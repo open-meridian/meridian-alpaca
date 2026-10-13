@@ -28,6 +28,7 @@ from meridian.roles import data
 
 from .convert import NEW_YORK
 from .declaration import CATALOGUE
+from .kinds import Store
 from .lake import DAILY, LIVE, PRICE, QUOTE, TRADES, Lake
 from .records import (
     ConnectionRead,
@@ -40,6 +41,7 @@ from .records import (
 from .settings import Config
 from .source import AlpacaSource
 from .stream import Streamer
+from .trading import Trader
 from .vendor import IEX, LIMIT_PER_MINUTE, NS, SIP, Alpaca, Usage
 
 TITLE = "Alpaca"
@@ -55,6 +57,11 @@ SHOWN_WANTS = 3
 pages = meridian.Pages(TITLE, templates=Path(__file__).parent / "templates", kit=KIT)
 
 
+def current() -> State:
+    """The state the pages read now."""
+    return _state
+
+
 @dataclass
 class State:
     """What the pages read: the settings, the lake's half and the source."""
@@ -66,6 +73,14 @@ class State:
     streamer: Streamer | None = None
     #: The datasets a deployment admin has licensed (contract v20), as read.
     licensed: frozenset[str] = frozenset()
+    #: Connectivity, from 0.7.0: its trader, the trade updates, the kinds'
+    #: store, the account scope with its ems's map, and the settings as
+    #: delivered (for each kind's window).
+    trader: Trader | None = None
+    updates: Any = None
+    store: Store | None = None
+    scope: meridian.AccountScope = field(default_factory=meridian.AccountScope)
+    values: dict[str, object] = field(default_factory=dict)
 
 
 _state = State()
@@ -350,6 +365,7 @@ def figures(state: State) -> list[meridian.Figure]:
     CONNECTION,
     "Connection",
     levels="admin",
+    roles="data",
     answers=ConnectionRead,
     name="read_connection",
     description=(
@@ -370,6 +386,7 @@ async def connection(request: meridian.Request) -> meridian.Response:
     DATASETS,
     "Datasets",
     levels="admin",
+    roles="data",
     answers=DatasetsRead,
     name="read_datasets",
     description=(
@@ -388,6 +405,10 @@ async def datasets(request: meridian.Request) -> meridian.Response:
     # how many there are.
     drawn = read if request.tool_name else replace(read, wants=read.wants[:SHOWN_WANTS])
     return pages.answer("datasets.html", drawn, wants=len(read.wants))
+
+
+# Connectivity's pages, declared after the data role's.
+from . import trading_page  # noqa: E402,F401
 
 
 def serve(plugin: meridian.Plugin, state: State, port: int) -> Any:

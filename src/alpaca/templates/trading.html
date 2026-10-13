@@ -1,0 +1,48 @@
+{#- Trading, at admin: connectivity's state at Alpaca -- the key, set or not;
+    the environment, said plainly; each account read-only or with trading
+    enabled, with "Enable trading" for the connectivity role's admin alone;
+    and the placements working, held back or of unknown outcome. Counts and
+    codes only: no account's data. -#}
+{% extends "meridian/base.html" %}
+{% import "meridian/kit.html" as kit %}
+{% import "meridian/roles/_rows.html" as om %}
+{% block content %}
+{% if notice is defined and notice %}<div class="notice good" role="status">{{ notice }}</div>{% endif %}
+{% if data.credentials and not data.credentials|selectattr("set")|list and "Sample data" not in data.environment %}
+{{ om.next_step("No key yet", "Enter the API key ID and secret key in", "settings", "Settings") }}
+{% endif %}
+<section class="panel">
+<h2>Environment</h2>
+<table class="one-line"><tbody>
+{{ om.row("Environment", data.environment) }}
+{% set key %}{% for each in data.credentials %}{{ each.label }}: {{ "set" if each.set else "not set" }}{% if not loop.last %}; {% endif %}{% endfor %}{% endset %}
+{{ om.row("Key", key|trim) }}
+{% if data.error %}{{ om.row("Last error", data.error) }}{% endif %}
+</tbody></table>
+</section>
+<section class="panel">
+<h2>Accounts</h2>
+{% if data.accounts %}
+<table class="one-line">
+<thead><tr><th>Venue account code</th><th>Trading</th><th class="wide-only">Order types</th><th class="wide-only">Mapped by its ems</th><th></th></tr></thead>
+<tbody>
+{% for row in data.accounts %}
+<tr><td><code>{{ row.venue_account_code }}</code></td><td>{{ "Enabled" if row.trading else "Read-only" }}</td><td class="wide-only">{{ row.order_types|join(", ") or "None" }}</td><td class="wide-only">{{ "Yes" if row.mapped else "No" }}</td>
+<td>{% if not row.trading and may_enable %}{{ kit.action(enable, "Enable trading", kind="primary", fields={"venue_account_code": row.venue_account_code}, label="Enable trading on " ~ row.venue_account_code) }}{% endif %}</td></tr>
+{% endfor %}
+</tbody></table>
+{% else %}
+<div class="empty-state"><strong>No account reached yet</strong><p>An account appears once Alpaca has been asked with the key.</p></div>
+{% endif %}
+</section>
+<section class="panel">
+<h2>Placements</h2>
+<table class="one-line"><tbody>
+{{ om.row("Working", data.working) }}
+{{ om.row("Held back", data.held, "by a pause or a stop in force") }}
+{{ om.row("Outcome unknown", data.unknown, "asked about on each read, never sent again") }}
+{{ om.row("Orders last read", data.last_poll or "Not yet") }}
+{{ om.row("Trade updates", data.updates or "Not streaming") }}
+</tbody></table>
+</section>
+{% endblock %}

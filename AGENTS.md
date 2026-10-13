@@ -1,7 +1,8 @@
 # alpaca
 
 Alpaca's US equity and ETF market data in an Open Meridian deployment's
-lake, as a data plugin (contract v20). What is particular to this plugin first;
+lake, as a data plugin (contract v20), and from 0.7.0 the orders a desk
+places at Alpaca, as a connectivity plugin (contract v22). What is particular to this plugin first;
 the rest of this file is the SDK template's guidance, which holds for it
 as for every plugin.
 
@@ -37,6 +38,22 @@ as for every plugin.
 - `src/alpaca/synthetic.py` and `exchanges/exchange.json`: Alpaca's responses
   with invented values, for sample data, the tests and the e2e. Never
   commit a real response: they are the account holder's, for personal use.
+- `src/alpaca/trading.py`: the connectivity role, in SnapTrade 0.16.0's
+  shape: placements heard, sent, changed and cancelled; facts reported;
+  fills derived to one ID however they are heard; pauses and stops;
+  enabling trading and the catalogue. `venue.py` is Alpaca's words for it,
+  `broker.py` the one module that speaks to the Trading API (paper or live,
+  every exchange a raw record first, `kinds.py`), `updates.py` the trade
+  updates stream, `trading_page.py` the Trading and Raw records pages.
+- `src/alpaca/synthetic_broker.py`: a simulated brokerage behind the Trading
+  API's shapes, a symbol for each answer (`SYNREJ`, `SYNLOST`, `SYNODD`,
+  `SYNBUST`, `SYNREN`). The tests and the e2e trade with it alone. **Never
+  call Alpaca's paper or live trading API from a test, the e2e or a
+  session, and never place, change or cancel a real or paper order**: the
+  paper run is the product owner's, by hand.
+- `tests/test_connectivity_suite.py` runs the connectivity suite, through
+  the plugin's own Trader (`tests/trading_cases.py`); `e2e/orders.py` the
+  order path on the harness, with the desk (`e2e/desk.py`).
 - `tests/test_suite.py` runs the SDK's data suite unchanged. Keep it passing
   after every change; `make ci-local` runs it, and the e2e on core's plugin
   harness (`e2e/run.py`).

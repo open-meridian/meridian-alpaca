@@ -5,8 +5,10 @@ documented and recorded responses (src/alpaca/exchanges/exchange.json);
 `make e2e-recorded RECORDED=<dir>` replays a developer's own recording, never
 committed, through the same run.
 
-Two plugins: `alpaca`, this one, and `reader` (e2e/reader.py), a stand-in for
-whatever reads prices, from the same image.
+Three plugins: `alpaca`, this one, `reader` (e2e/reader.py), a stand-in for
+whatever reads prices, and `desk` (e2e/desk.py), a stand-in holding
+`portfolio`, `oms` and `ems` that places orders at Alpaca's instance, each
+from the same image.
 
 1. The catalogue: the three datasets listed by `dashboard__list_datasets`,
    as the plugin declared them -- daily pulled and pushed, its day New
@@ -50,6 +52,9 @@ whatever reads prices, from the same image.
    start that each of its datasets is licensed, as Datasets then says.
 9. `store lake`: each row as recorded, numbered with no holes, the wants
    answered and declined, the venue's miss.
+10. From 0.7.0, the order path (e2e/orders.py): a third plugin, the desk
+   (e2e/desk.py), places at Alpaca's instance, holding `connectivity`
+   beside `data`, and the plugin trades with its simulated brokerage.
 
 Run by the Makefile from the repository's root, after it builds the image and
 copies the harness out; standard library only.
@@ -60,6 +65,8 @@ import os
 import subprocess
 import sys
 import time
+
+import orders
 
 #: `--recorded` replays a developer's recording (`make e2e-recorded`): its
 #: values are Alpaca's, not the synthetic exchange's, so each is checked for
@@ -159,12 +166,13 @@ def run():
     started = time.time()
     compose("down", "-v", "--remove-orphans", check=False)
     compose("up", "-d")
-    for instance in ("alpaca", "reader"):
+    for instance in ("alpaca", "reader", "desk"):
         runner("ready", "--instance", instance)
     runner("settings", "sample_data=true")
-    runner("grant", "--level", "admin")
+    # From 0.7.0 it holds two roles, and a grant names one.
+    runner("grant", "--level", "admin", "--role", "data")
     runner("grant", "--instance", "reader", "--level", "read", "--role", "reporting")
-    runner("mcp", "connect", "--covers", "deployment_admin", "--covers", "alpaca:admin")
+    runner("mcp", "connect", "--covers", "deployment_admin", "--covers", "alpaca:data:admin")
 
     # 1. The catalogue.
     def listed():
@@ -350,6 +358,10 @@ def run():
     must(RECORDED or (numbered and numbered == list(range(1, len(numbered) + 1))),
          f"step 9, the trades numbered from 1 with no holes: {numbered[:20]}")
 
+    # 10. The order path, in the same harness.
+    orders.COMPOSE, orders.LOG = COMPOSE, LOG
+    path = orders.run()
+
     took = int(time.time() - started)
     print(f"{NAME} OK in {took}s on the plugin harness, sample data, no key: the three datasets listed as "
           "declared, Alpaca's personal-use terms their default licence; licensed and the reader "
@@ -359,7 +371,7 @@ def run():
           "last on IEX with the venue kept as reported and the miss counted; Connection and "
           "Datasets, the data role's, read under Manage and through /mcp alike, no price shown; "
           "the product map kept across a new container, its licences read on start; `store lake` numbered with no holes; quotes as a standing want, streamed; trades streamed and kept, their "
-          "attributes converted, caught up after the watermark")
+          "attributes converted, caught up after the watermark; " + path)
 
 
 def main():
@@ -367,7 +379,8 @@ def main():
     open(LOG, "w").close()
     try:
         run()
-    except (Failed, subprocess.TimeoutExpired, KeyError, ValueError, IndexError, TypeError) as failed:
+    except (Failed, orders.Failed, subprocess.TimeoutExpired, KeyError, ValueError, IndexError,
+            TypeError) as failed:
         compose("logs", "--no-color", check=False)
         print(f"{NAME} FAILED: {failed}; the run is in {LOG}", file=sys.stderr)
         return 1

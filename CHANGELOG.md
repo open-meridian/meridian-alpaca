@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.7.0 (unreleased)
+
+- The `connectivity` role (contract 22), beside `data`, in SnapTrade
+  0.16.0's shape: the plugin places the placements naming its instance at
+  Alpaca's Trading API, in the account its `ems` mapped
+  (`AccountScope.venue_account_map`), with the placement's ID as the client
+  order ID, and reports acknowledgements, rejections (`unsupported` with
+  nothing sent, or `venue rejected` with Alpaca's code and words),
+  replaces, restatements, cancels, expiries, done for day, fills and busts,
+  each with its raw record. A status the mapping does not know is outcome
+  unknown and resolved by reading; a send never answered is asked about,
+  never sent again, across a restart (`trading/sent.json`).
+- Fills: as Alpaca states them on its trade updates stream, and inferred
+  from the orders read every 15 seconds besides, each derived to the same ID
+  (the order and the filled quantity it brought it to); every fill's
+  settlement date is the deployment's (ComputeDate, with its basis), since
+  Alpaca states none.
+- Cancel and replace read from `Placement.change_requests`; a replace is
+  Alpaca's `PATCH`, its new order followed. Pauses and stops honoured, a
+  stop's cancels reported naming its entry.
+- The venue catalogue per venue account code: none on a read-only account;
+  once trading is enabled on it by the connectivity role's admin
+  (**Trading**, `enable_trading`, at `/admin/connections/enable-trading`),
+  Alpaca's order types and times in force.
+- Settings: `environment` (`live`, or `sandbox`: Alpaca's paper trading
+  API), first; the key and sample data now serve both roles. The key's
+  value carries over.
+- Two kinds of raw record, each with its window an admin sets: `responses`
+  (30 days) and `trading` (2555 days), archivable; **Raw records** follows
+  a fact's reference.
+- The connectivity suite: 19 cases pass; 7 are not presented, each with
+  why (calendars, locates, a fill's place of execution, compliance waits);
+  `reports-a-charge` is not produced, Alpaca stating no fee on a placement
+  that filled nothing (for the product owner to rule on).
+- `make e2e` runs the order path after the data steps (e2e/orders.py),
+  with a stand-in desk (e2e/desk.py), against a simulated brokerage
+  (src/alpaca/synthetic_broker.py). Nothing reaches Alpaca's trading API.
+
 ## 0.6.0 (unreleased)
 
 - On open-meridian 0.26.0 (contract 22): the pins moved as the SDK's

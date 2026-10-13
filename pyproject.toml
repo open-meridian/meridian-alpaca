@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alpaca"
-version = "0.6.0"
-description = "Alpaca's US equity and ETF market data in an Open Meridian deployment's lake, as a data plugin"
+version = "0.7.0"
+description = "Alpaca's US equity and ETF market data in an Open Meridian deployment's lake, and orders placed at Alpaca"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 # The SDK and nothing else of Meridian's, pinned exactly: the sidecar this runs
@@ -43,12 +43,12 @@ alpaca = ["templates/*.html", "exchanges/*.json"]
 [tool.meridian]
 # Roles from the deployment's fixed list -- compliance, confirmation,
 # connectivity, custody, data, ems, oms, operations, portfolio, reporting,
-# servicing, settlement, signal -- and its grants are theirs. `data` alone,
-# a data plugin (`dgm` until contract v20; the lake plan's Q3: Alpaca is a
-# broker, and its `custody` and `connectivity` arrive later here): it
-# would put Alpaca's market data into the lake, its codes converted at the
-# edge, and keep Alpaca's raw responses in its own storage (contract v18).
-roles = ["data"]
+# servicing, settlement, signal -- and its grants are theirs. `data`
+# (contract v18; `dgm` until v20): Alpaca's market data into the lake, its
+# codes converted at the edge. From 0.7.0 (contract v22), `connectivity`:
+# the placements naming it placed at Alpaca's Trading API, and what Alpaca
+# did with them. Each keeps Alpaca's raw responses in its own storage.
+roles = ["data", "connectivity"]
 # Whether it serves a page through its sidecar.
 interface = true
 # Its declaration: its catalogue (the datasets it serves the lake), its
