@@ -1,8 +1,10 @@
 # alpaca
 
 Alpaca's US equity and ETF market data in an Open Meridian deployment's
-lake, as a data plugin (contract v20), and from 0.7.0 the orders a desk
-places at Alpaca, as a connectivity plugin (contract v22). What is particular to this plugin first;
+lake, as a data plugin (contract v20), from 0.7.0 the orders a desk
+places at Alpaca, as a connectivity plugin (contract v22), and from 0.8.0
+the account as Alpaca states it, as a custody plugin (contract v23). What
+is particular to this plugin first;
 the rest of this file is the SDK template's guidance, which holds for it
 as for every plugin.
 
@@ -44,10 +46,18 @@ as for every plugin.
   enabling trading and the catalogue. `venue.py` is Alpaca's words for it,
   `broker.py` the one module that speaks to the Trading API (paper or live,
   every exchange a raw record first, `kinds.py`), `updates.py` the trade
-  updates stream, `trading_page.py` the Trading and Raw records pages.
+  updates stream, `trading_page.py` the Trading and Raw records pages. From
+  0.8.0 an order placed in Alpaca's own app has its fills reported on no
+  placement (`Originated`, `Watched`: `trading/originated.json`), and the
+  placement an accept creates is followed for its later fills.
+- `src/alpaca/custody.py`: the custody role (from 0.8.0): the account, its
+  positions, cash and activities read from the Trading API and reported
+  (`Syncer`), every value closed rather than read carrying its provenance;
+  `custody_pages.py` the Account links, Statements and History pages.
 - `src/alpaca/synthetic_broker.py`: a simulated brokerage behind the Trading
   API's shapes, a symbol for each answer (`SYNREJ`, `SYNLOST`, `SYNODD`,
-  `SYNBUST`, `SYNREN`). The tests and the e2e trade with it alone. **Never
+  `SYNBUST`, `SYNREN`), the account's positions and activities, and orders
+  placed in Alpaca's own app (`place_at_the_brokerage`). The tests and the e2e trade with it alone. **Never
   call Alpaca's paper or live trading API from a test, the e2e or a
   session, and never place, change or cancel a real or paper order**: the
   paper run is the product owner's, by hand.

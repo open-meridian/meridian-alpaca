@@ -17,7 +17,7 @@ from meridian.suites import Recorder
 
 from alpaca import synthetic_broker
 from alpaca.synthetic_broker import SyntheticBroker
-from alpaca.trading import Noted, execution_id, fill_price
+from alpaca.trading import Noted, Watched, execution_id, fill_price
 from trading_cases import CODE, Rig, asking, clock, placement
 
 
@@ -222,21 +222,70 @@ def test_enabling_trading_publishes_the_catalogue(tmp_path: Path) -> None:
     assert ops.ORDER_TYPE_LIMIT in offered and ops.TIME_IN_FORCE_GOOD_TILL_DATE not in [
         tif for tifs in offered.values() for tif in tifs
     ]
-    assert (
-        not second.catalogue.HasField("execution_acknowledgement")
-        if hasattr(second.catalogue, "execution_acknowledgement")
-        else True
-    )
+    assert second.catalogue.execution_acknowledgement == ops.EXECUTION_ACKNOWLEDGEMENT_NONE
     assert json.loads((tmp_path / "trading" / "enabled.json").read_text()) == [CODE]
 
 
-def test_an_order_placed_outside_the_platform_is_left_alone() -> None:
+def test_an_order_filled_before_the_account_was_watched_is_its_history() -> None:
+    """The order the brokerage took in its own app on 2026-09-02, before the
+    plugin first watched the account: no order, no fill reported (contract
+    v23 reports only the fills after)."""
     recorder = Recorder("alpaca")
     rig = Rig(recorder)
     run(rig.trader.start())
     run(rig.poll(2))
     assert recorder.on("ReportExecution") == [] and recorder.on("ReportPlacement") == []
-    assert synthetic_broker.OUTSIDE_ID in rig.trader.outside
+    assert synthetic_broker.OUTSIDE_ID in rig.trader.history
+
+
+def test_an_order_placed_in_alpacas_app_has_its_fills_reported_on_no_placement(
+    tmp_path: Path,
+) -> None:
+    """Contract v23: the order's fills reported on no placement, each once,
+    a restart reporting none of them again (`trading/originated.json`)."""
+    recorder = Recorder("alpaca")
+    rig = Rig(recorder)
+    rig.watched = Watched(tmp_path / "trading" / "originated.json")
+    rig.trader = rig.make()
+    run(rig.trader.start())
+    run(rig.poll())
+    venue_order = rig.brokerage.at_the_brokerage("AAPL", "5")
+    run(rig.poll(3))
+    fills = recorder.on("ReportExecution")
+    assert [(f.placement_id, f.venue_order_id, f.side) for f in fills] == [
+        ("", venue_order, ops.SIDE_BUY),
+        ("", venue_order, ops.SIDE_BUY),
+    ]
+    assert sorted(as_decimal(f.quantity) for f in fills) == [Decimal(2), Decimal(3)]
+    assert all(f.venue_client_order_id.startswith("alpaca-app-") for f in fills)
+    rig.watched = Watched(tmp_path / "trading" / "originated.json")
+    rig.trader = rig.make()
+    run(rig.trader.start())
+    run(rig.poll(2))
+    assert len(recorder.on("ReportExecution")) == 2, "a restart reports no fill twice"
+
+
+def test_a_dk_tells_the_venue_nothing_and_a_later_fill_is_unmatched_again() -> None:
+    recorder = Recorder("alpaca")
+    rig = Rig(recorder)
+    run(rig.trader.start())
+    run(rig.poll())
+    venue_order = rig.brokerage.at_the_brokerage("AAPL", "5")
+    run(rig.poll())
+    (first,) = rig.executions
+    answered = ops.Execution(
+        execution_id=first.execution_id,
+        venue_order_id=venue_order,
+        state=ops.EXECUTION_STATE_DONT_KNOW,
+        dk_reason=ops.DK_REASON_NO_MATCHING_ORDER,
+    )
+    asked = len(rig.brokerage.asked)
+    recorder.answer("ExecutionRecorded", lambda _: ops.ExecutionRecordedEvent(execution=answered))
+    run(recorder.receive(execution_recorded=rig.trader.on_execution))
+    assert len(rig.brokerage.asked) == asked, "nothing sent to the venue on a DK"
+    run(rig.poll())
+    later = recorder.on("ReportExecution")[-1]
+    assert later.placement_id == "" and later.venue_order_id == venue_order
 
 
 def test_a_status_alpaca_lists_and_the_mapping_does_not_is_unknown_then_known() -> None:

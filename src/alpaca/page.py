@@ -27,6 +27,7 @@ from meridian.plugin.v1 import operations_pb2 as ops
 from meridian.roles import data
 
 from .convert import NEW_YORK
+from .custody import Syncer
 from .declaration import CATALOGUE
 from .kinds import Store
 from .lake import DAILY, LIVE, PRICE, QUOTE, TRADES, Lake
@@ -73,9 +74,11 @@ class State:
     streamer: Streamer | None = None
     #: The datasets a deployment admin has licensed (contract v20), as read.
     licensed: frozenset[str] = frozenset()
-    #: Connectivity, from 0.7.0: its trader, the trade updates, the kinds'
-    #: store, the account scope with its ems's map, and the settings as
+    #: The account side: custody's reads (from 0.8.0), connectivity's
+    #: trader and the trade updates (from 0.7.0), the kinds' store, the
+    #: account scope with its links and its ems's map, and the settings as
     #: delivered (for each kind's window).
+    syncer: Syncer | None = None
     trader: Trader | None = None
     updates: Any = None
     store: Store | None = None
@@ -407,8 +410,9 @@ async def datasets(request: meridian.Request) -> meridian.Response:
     return pages.answer("datasets.html", drawn, wants=len(read.wants))
 
 
-# Connectivity's pages, declared after the data role's.
-from . import trading_page  # noqa: E402,F401
+# The account side's pages, declared after the data role's: connectivity's,
+# then custody's.
+from . import custody_pages, trading_page  # noqa: E402,F401,I001
 
 
 def serve(plugin: meridian.Plugin, state: State, port: int) -> Any:

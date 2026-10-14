@@ -141,7 +141,8 @@ def test_no_key_value_and_no_price_is_ever_shown(tmp_path: Path) -> None:
     state.config = Config(credentials=KEY, key_id_set=True, secret_key_set=True)
     state.source._entitled = Entitlements(answered=True, iex=True, sip_history=True)  # type: ignore[union-attr]
     use(state)
-    client = PageClient(pages)
+    # The sidecar's stand-in, for the custody pages' reads (from 0.8.0).
+    client = PageClient(pages, Recorder("alpaca"))
     for path in (CONNECTION, DATASETS):
         text = client.get(path, "admin").text
         assert KEY.key_id not in text and KEY.secret_key not in text

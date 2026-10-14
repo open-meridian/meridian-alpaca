@@ -1,11 +1,15 @@
 """Alpaca's Trading API v2: the one module that speaks to it (from 0.7.0).
 
-Connectivity trades through the Trading API of the environment chosen
-(settings.py): its live service, `https://api.alpaca.markets`, or its paper
-one, `https://paper-api.alpaca.markets`, the same API with simulated money.
-It reads `GET /v2/account` (the account's number, its venue account code)
-and `GET /v2/orders`, and places, replaces and cancels with
-`POST /v2/orders`, `PATCH /v2/orders/{id}` and `DELETE /v2/orders/{id}`.
+The account side, custody (from 0.8.0) and connectivity, reads and trades
+through the Trading API of the environment chosen (settings.py): its live
+service, `https://api.alpaca.markets`, or its paper one,
+`https://paper-api.alpaca.markets`, the same API with simulated money.
+
+- custody reads `GET /v2/account` (the account, its number, status and
+  cash), `GET /v2/positions` and `GET /v2/account/activities`;
+- connectivity reads `GET /v2/account` (the account's number, its venue
+  account code) and `GET /v2/orders`, and places, replaces and cancels with
+  `POST /v2/orders`, `PATCH /v2/orders/{id}` and `DELETE /v2/orders/{id}`.
 
 **The key.** Alpaca's two headers, from `settings.Credentials`, on the
 request and nowhere else: a raw record keeps the request's other headers and
@@ -14,7 +18,7 @@ is kept. Without a key, nothing is asked.
 
 **Every exchange is a raw record first** (kinds.py), with its request and
 the moment its answer arrived, before anything reads it: a read under
-`responses`, a send under `trading`.
+`responses`, a page of activities under `activity`, a send under `trading`.
 A send that never got an answer is kept too, saying so, and raises
 `Unanswered`: it may have reached Alpaca, and is never sent again on its own
 (trading.py). Alpaca's numbers are text; a body is parsed with every number
@@ -43,7 +47,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from .kinds import RESPONSES, TRADING, Store
+from .kinds import ACTIVITY, RESPONSES, TRADING, Store
 from .settings import LIVE, Credentials
 from .vendor import REDACTED, RateLimiter, Response, parse
 
@@ -52,8 +56,10 @@ PAPER_BASE = "https://paper-api.alpaca.markets"
 #: The trade updates stream of each environment.
 LIVE_STREAM = "wss://api.alpaca.markets/stream"
 PAPER_STREAM = "wss://paper-api.alpaca.markets/stream"
-USER_AGENT = "meridian-alpaca/0.7.0 (+https://open-meridian.dev)"
+USER_AGENT = "meridian-alpaca/0.8.0 (+https://open-meridian.dev)"
 LIMIT_PER_MINUTE = 100
+#: Alpaca's most activities in one page.
+ACTIVITY_PAGE = 100
 #: The most orders one read lists.
 ORDERS_PAGE = 500
 KEPT_HEADERS = ("date", "content-type", "x-ratelimit-remaining", "x-request-id")
@@ -240,6 +246,23 @@ class Broker:
     def account(self) -> Answer:
         """The account the key reaches: its number is its venue account code."""
         return self._ask("account", RESPONSES, "account", "GET", "/v2/account")
+
+    # ── Custody's reads, from 0.8.0 ─────────────────────────────────────
+
+    def positions(self) -> Answer:
+        """The account's open positions, as Alpaca states them now."""
+        return self._ask("positions", RESPONSES, "positions", "GET", "/v2/positions")
+
+    def activities(self, after: str = "", page_token: str = "") -> Answer:
+        """One page of the account's activities, oldest first, after a date."""
+        params = {"direction": "asc", "page_size": str(ACTIVITY_PAGE)}
+        if after:
+            params["after"] = after
+        if page_token:
+            params["page_token"] = page_token
+        return self._ask(
+            "activities", ACTIVITY, "activities", "GET", "/v2/account/activities", params
+        )
 
     def orders(self) -> Answer:
         """Every order of the account, open and closed, the latest first."""

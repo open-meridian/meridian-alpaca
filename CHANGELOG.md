@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.8.0 (unreleased)
+
+- On open-meridian 0.27.0 (contract 23): the pins moved as the SDK's
+  0.26.0 to 0.27.0 step moves them; meridian 0.1.43's checks.
+- The `custody` role, beside `data` and `connectivity`, in SnapTrade
+  0.16.0's shape: the account Alpaca's key reaches (`/v2/account`), its
+  positions (`/v2/positions`) and its activities (`/v2/account/activities`),
+  read every **Read every**, reported in the contract's words: the account,
+  margin by its margin classification; its sync state; a statement as of
+  the day in New York, a row per position and the cash, the settled
+  quantity and pending lines derived from the account's unsettled fills and
+  the deployment's settlement dates; every activity, converted to its kind
+  or kept as reported, a fill's amount derived. Alpaca states the currency
+  of every amount by its account's (USD), read as the product owner ruled
+  for OANDA's account; each resolve offers it with its provenance reported
+  from the account's raw record (`ResolveIdentifierRequest.provenance`).
+- Custody's pages: **Account links** (`read_account_links`, `link_account`,
+  checked by `check_link_account`), **Statements** (`read_statements`) and
+  **History** (`read_account_activities`); **Raw records** serves custody
+  too. Settings: custody's **Read every** and **Stale after**. A third kind
+  of raw record, `activity` (2555 days), SnapTrade's.
+- Connectivity, contract 23: an order placed in Alpaca's own app has its
+  fills reported on no placement, held unmatched until the desk's `ems`
+  accepts or answers them DK; the accept's placement takes the order's
+  later fills. Only fills after the plugin first watched the account are
+  reported (`trading/originated.json`). The catalogue's
+  `execution_acknowledgement` is none: Alpaca takes none, so a DK tells it
+  nothing. Every fill names Alpaca's order ID.
+- The suites: custody passes every case but 12 Alpaca never presents, each
+  with why; connectivity passes every case but 10 not presented, among them
+  `reports-a-charge` (`about: charges without a fill`) and v23's charge
+  re-reported on an accepted placement and value-date roll; data marks
+  v23's three outcome cases not presented. No suite test is skipped or
+  expected to fail.
+- `make e2e`: Alpaca's account linked to the e2e's account, its opening
+  balance recorded from Alpaca's statement by the desk (now holding
+  `operations` too); an order placed in Alpaca's app reported on no
+  placement and accepted to a new order; and after every fill, the book
+  reconciled against Alpaca's statement with no break.
+
 ## 0.7.0 (unreleased)
 
 - The `connectivity` role (contract 22), beside `data`, in SnapTrade

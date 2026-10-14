@@ -1,22 +1,27 @@
 # meridian-alpaca
 
 Alpaca's US equity and ETF market data in an [Open Meridian](https://open-meridian.dev)
-deployment, and the orders a desk places at Alpaca. Two roles:
+deployment, the account as Alpaca states it, and the orders a desk places
+at Alpaca. Three roles:
 
 - `data`: daily closes and bars, live prices and quotes, and trades, put
   into the deployment's lake for the plugins that value and show a book.
 - `connectivity` (from 0.7.0, contract 22): the placements a desk's `ems`
   names this instance on, placed at Alpaca's Trading API, paper or live,
   and what Alpaca did with them: acknowledgements, rejections, replaces,
-  cancels, fills with their settlement dates, and busts.
+  cancels, fills with their settlement dates, and busts; from 0.8.0
+  (contract 23) the fills of orders placed in Alpaca's own app too,
+  reported on no placement for the desk to accept or answer DK.
+- `custody` (from 0.8.0, contract 23): Alpaca's view of the account -- its
+  positions and cash, settled and pending, and its activity -- which the
+  deployment's operations reconcile the book against.
 
 It is the first half of the retail pair, beside
 [meridian-tradier](https://github.com/open-meridian/plugin-tradier): both
-pass the same suites of the SDK, unchanged. A `custody` role, Alpaca's view
-of the account, follows in the next version.
+pass the same suites of the SDK, unchanged.
 
-**Status:** 0.7.0, on open-meridian 0.26.0 (contract 22), proven locally
-against core v22's runtime and plugin harness (8774368). Not released.
+**Status:** 0.8.0, on open-meridian 0.27.0 (contract 23), proven locally
+against core v23's runtime and plugin harness, built locally. Not released.
 
 ## What it serves
 
@@ -178,18 +183,62 @@ is), the plugin is a desk's connection to Alpaca:
    about on the next read, never sent again, across a restart too
    (`trading/sent.json` in the plugin's storage).
 
-An order the account holder places at Alpaca outside the platform is left
-alone: no order is recorded and no fill reported (venue-originated fills are
-contract 23's). Every exchange with the Trading API is kept as a raw record
+An order the account holder places in Alpaca's own app (contract 23) is
+never recorded as an order: its fills are reported on no placement, the
+venue account code, instrument, side and Alpaca's order and client order IDs
+named, and wait in the book unmatched until the desk's `ems` accepts them or
+answers them DK. Alpaca takes no execution acknowledgement, so it is told
+nothing either way (the catalogue's `execution_acknowledgement` is none).
+Once accepted, the order's later fills go on the placement the accept
+created. Only fills after the plugin first watched the account are
+reported: an order filled before then is the account's history, which its
+opening balance holds. Every exchange with the Trading API is kept as a raw record
 of the `trading` kind (seven years by default, an admin's setting, archived,
 kept or deleted past it), and each read of the orders under `responses` (30
 days); **Raw records** (Open and View) follows a fact's reference to the
 record, for a person who may read the account.
 
 What Alpaca never states, the plugin does not invent: a fill's place of
-execution, a locate, and a fee charged on a placement that filled nothing.
-The connectivity suite's case for a charge is therefore not produced, until
-the product owner rules on it.
+execution, a locate, and a fee charged on any order (Alpaca's fees are
+daily account activity naming no order). The connectivity suite marks
+those cases not presented, with why, as it marks a value-date roll; every
+other case passes, a bust among them (Alpaca busts a fill with its
+`trade_bust` event, the order's filled quantity falling).
+
+## The account at Alpaca
+
+With the `custody` role (from 0.8.0), the plugin reads the account every
+**Read every** (300 seconds by default; **Stale after**, 36 hours, says how
+long it may go unanswered before the account is reported stale), from
+`/v2/account`, `/v2/positions` and `/v2/account/activities`, each answer a
+raw record first:
+
+1. A deployment admin grants the plugin the accounts it may link to; its
+   admin links Alpaca's account to one of them on **Account links** (under
+   Manage), or, a deployment admin, to a new account created in one step.
+   Nothing is reported for an account nothing links.
+2. Each read reports the account's sync state (current, needs sign-in when
+   Alpaca refuses the key, disabled when Alpaca says it is closed or
+   blocked, stale), and a statement as of the day in New York: a row per
+   position, and the cash. Alpaca's account states no type; its margin
+   classification (multiplier 1, 2 or 4) is a margin account's.
+3. Alpaca states the currency of the account's amounts by the account's own
+   `currency` (USD), read, not derived. It states no settled quantity: each
+   fill not yet settled is pending on the deployment's settlement date for
+   it, and the settled quantity is the quantity less them, said by its
+   provenance.
+4. Its activity: fills (their amount the quantity times the price, derived),
+   dividends, interest, fees, taxes, splits, corporate actions, transfers,
+   deposits, withdrawals and journals, any other type kept as reported.
+   **Statements** and **History** (Open and View) show them to a person who
+   may read the linked account; a raw record kept under `activity` (seven
+   years by default).
+
+The custody suite passes but for the cases Alpaca never presents, each
+marked not presented with why: a connection late by design or holdings not
+served, a cash or retirement account, a money market fund counted in cash,
+a currency not stated, a reinvestment, a plan's own fund code, and a
+calendar's days.
 
 **The live paper run is the product owner's, by hand.** The tests and the
 e2e trade with a simulated brokerage (src/alpaca/synthetic_broker.py) and
@@ -219,8 +268,8 @@ machine; CI never runs it.
 
 ## Building it
 
-    make ci-local        lint, the tests (the SDK's data and connectivity suites among them), meridian plugin check, the image, and the e2e
-    make e2e             the plugin on core's plugin harness, on sample data, with no key (e2e/run.py), the order path among it (e2e/orders.py)
+    make ci-local        lint, the tests (the SDK's data, custody and connectivity suites among them), meridian plugin check, the image, and the e2e
+    make e2e             the plugin on core's plugin harness, on sample data, with no key (e2e/run.py), the order path, custody and a reconciliation among it (e2e/orders.py)
     make preview         the pages on sample data, for a browser beside the kit
     make install-hooks   push runs ci-local first
 

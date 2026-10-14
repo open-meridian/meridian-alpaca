@@ -24,7 +24,7 @@ from meridian.suites import Recorder
 from alpaca.broker import PAPER_BASE, Broker
 from alpaca.kinds import Store
 from alpaca.synthetic_broker import ACCOUNT_NUMBER, SyntheticBroker
-from alpaca.trading import Noted, Trader
+from alpaca.trading import Noted, Trader, Watched
 from alpaca.updates import SyntheticUpdates
 from alpaca.vendor import RateLimiter
 from alpaca.venue import AlpacaVenue
@@ -178,6 +178,7 @@ class Rig:
         self.venue = AlpacaVenue(self.broker)
         self.updates = SyntheticUpdates(self.brokerage)
         self.enabled = Noted(None)
+        self.watched = Watched(None)
         if enabled:
             self.enabled.note(CODE)
         self.orders: list[ops.Order] = []
@@ -200,6 +201,7 @@ class Rig:
             sent=self.sent,
             enabled=self.enabled,
             scope=lambda: self.scope,
+            watched=self.watched,
         )
         # As a running plugin's, past its start.
         trader.started.set()
@@ -217,6 +219,7 @@ class Rig:
         held = ops.Execution(
             execution_id=f"EXE-{self.minted}",
             placement_id=params.placement_id,
+            venue_order_id=params.venue_order_id,
             venue_execution_id=params.venue_execution_id,
             quantity=params.quantity,
             supersedes=params.supersedes,

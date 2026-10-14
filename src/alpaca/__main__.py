@@ -21,8 +21,12 @@ From 0.7.0 it is also the account's connection for orders, where the
 deployment launched it with `connectivity`: it hears each placement naming
 its instance and places it at Alpaca's Trading API in the environment
 chosen (paper or live), hears Alpaca's trade updates and reads the orders,
-honouring the firm's pauses and stops (trading.py, updates.py). Sample data
-trades with a simulated brokerage (synthetic_broker.py), never Alpaca.
+honouring the firm's pauses and stops, and from 0.8.0 reports the fills of
+orders placed in Alpaca's own app on no placement (trading.py, updates.py).
+From 0.8.0, where launched with `custody`, it is the account's custodian
+too: it reads the account every Read every, reporting its positions, cash
+and activity (custody.py). Sample data trades with, and reads, a simulated
+brokerage (synthetic_broker.py), never Alpaca.
 
 It holds nothing it cannot lose: what each subject's symbol is, and every
 raw response, are in the storage the deployment grants it (decisions/028);
@@ -47,6 +51,7 @@ import meridian
 from meridian import edge
 
 from .broker import Broker, base_for, stream_for
+from .custody import Syncer
 from .declaration import DECLARATION
 from .kinds import Store, tend, windows_from
 from .kinds import root as kinds_root
@@ -58,7 +63,7 @@ from .source import AlpacaSource
 from .stream import AlpacaFeed, Feed, Streamer, symbol_limit
 from .synthetic import SyntheticFeed, SyntheticTransport, exchange
 from .synthetic_broker import SyntheticBroker
-from .trading import Noted, Trader, trading_files
+from .trading import Noted, Trader, Watched, trading_files
 from .updates import AlpacaUpdates, SyntheticUpdates
 from .vendor import IEX, Alpaca, NoKey, VendorError, urllib_transport
 from .venue import AlpacaVenue
@@ -73,6 +78,8 @@ LICENCES_SECONDS = 60
 #: updates; and the simulated brokerage, which steps an order on each read.
 POLL_SECONDS = 15
 SYNTHETIC_POLL_SECONDS = 1
+#: How often custody reads the simulated brokerage, in place of Read every.
+SYNTHETIC_READ_SECONDS = 5
 #: How often the kinds' windows are tended between deliveries of settings.
 TEND_SECONDS = 3600
 
@@ -202,6 +209,7 @@ async def watch_settings(
     store: RawStore,
     configured: asyncio.Event,
     account: Account | None = None,
+    woken: asyncio.Event | None = None,
 ) -> None:
     async for delivered in plugin.settings():
         state.config = config_from(delivered.values)
@@ -214,6 +222,8 @@ async def watch_settings(
                 await state.lake.seed(sorted(exchange()["bars"]))
         if account is not None and account.use(state.config):
             state.updates = account.updates
+            if woken is not None:
+                woken.set()
         configured.set()
         await health(plugin, state)
         if state.lake is not None:
@@ -233,11 +243,27 @@ async def tend_now(plugin: meridian.Plugin, kinds: Store, values: Any) -> None:
         log.warning("the raw records were not tended this time: %s", failed)
 
 
-async def follow_scope(plugin: meridian.Plugin, state: State) -> None:
-    """The account scope and its ems's venue account map (W11.22), on start
-    and on every change: connectivity and its pages hold it from here."""
+async def follow_scope(plugin: meridian.Plugin, state: State, woken: asyncio.Event) -> None:
+    """The account scope, its links (W4.11) and its ems's venue account map
+    (W11.22), on start and on every change: the account side and its pages
+    hold it from here, and custody reads again at once."""
     async for scope in plugin.account_scope():
         state.scope = scope
+        woken.set()
+
+
+async def custody_reads(state: State, syncer: Syncer, woken: asyncio.Event) -> None:
+    """Read Alpaca now, then every Read every, or sooner when the settings or
+    the links change."""
+    while True:
+        woken.clear()
+        try:
+            await syncer.run_once()
+        except meridian.MeridianError as failed:
+            log.warning("this read of the account stopped: %s", failed)
+        wait = SYNTHETIC_READ_SECONDS if state.config.sample_data else state.config.poll_seconds
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(woken.wait(), timeout=wait)
 
 
 async def trade(state: State, trader: Trader, hear: bool) -> None:
@@ -312,6 +338,9 @@ async def run() -> None:
         interface=meridian.Interface(port=port, title=TITLE, pages=pages),
         settings=DECLARED,
         declaration=DECLARATION,
+        # Custody names the account by Alpaca's number, which an admin of the
+        # plugin links to one of the deployment's accounts (W6.4).
+        reads_external_accounts=True,
     ) as plugin:
         roles = set(plugin.identity.roles)
         log.info(
@@ -326,8 +355,17 @@ async def run() -> None:
         )
         lake.streamer = state.streamer = streamer
         account = Account(kinds, granted)
+        woken = asyncio.Event()
+        if "custody" in roles:
+            state.syncer = Syncer(
+                plugin,
+                lambda: account.broker,
+                paper=lambda: state.config.paper and not state.config.sample_data,
+                stale_after=lambda: state.config.stale_after,
+                linked=lambda number: state.scope.link_of(number) is not None,
+            )
         if "connectivity" in roles:
-            sent, enabled = trading_files(granted)
+            sent, enabled, originated = trading_files(granted)
             state.trader = Trader(
                 plugin,
                 lambda: account.venue,
@@ -336,23 +374,32 @@ async def run() -> None:
                 enabled=Noted(enabled),
                 # The venue account codes its ems mapped on it (W11.22).
                 scope=lambda: state.scope,
+                watched=Watched(originated),
             )
         configured = asyncio.Event()
         page = serve(plugin, state, port)
         tasks = [
             asyncio.create_task(
                 again(
-                    lambda: watch_settings(plugin, state, store, configured, account),
+                    lambda: watch_settings(plugin, state, store, configured, account, woken),
                     "the settings",
                 )
             )
         ]
         await configured.wait()
-        if state.trader is not None:
+        if roles & {"custody", "connectivity"}:
             tasks.append(
-                asyncio.create_task(again(lambda: follow_scope(plugin, state), "the scope"))
+                asyncio.create_task(again(lambda: follow_scope(plugin, state, woken), "the scope"))
             )
             tasks.append(asyncio.create_task(tend_hourly(plugin, state, kinds)))
+        if state.syncer is not None:
+            syncer = state.syncer
+            tasks.append(
+                asyncio.create_task(
+                    again(lambda: custody_reads(state, syncer, woken), "custody's reads")
+                )
+            )
+        if state.trader is not None:
             trader = state.trader
             # With the data role too, its placements are heard on the one
             # stream that hears the lake's wants (below).
@@ -371,6 +418,7 @@ async def run() -> None:
             if state.trader is not None:
                 hearing["placement_updated"] = state.trader.on_placement
                 hearing["trading_instruction_changed"] = state.trader.on_instruction
+                hearing["execution_recorded"] = state.trader.on_execution
             tasks.append(
                 asyncio.create_task(
                     again(
