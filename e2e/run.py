@@ -54,7 +54,11 @@ from the same image.
    answered and declined, the venue's miss.
 10. From 0.7.0, the order path (e2e/orders.py): a third plugin, the desk
    (e2e/desk.py), places at Alpaca's instance, holding `connectivity`
-   beside `data`, and the plugin trades with its simulated brokerage.
+   beside `data`, and the plugin trades with its simulated brokerage; from
+   0.8.0 Alpaca holds `custody` too, its account linked, an order placed in
+   Alpaca's own app reported on no placement and accepted by the desk, and
+   the desk, holding `operations`, reconciles the book against Alpaca's
+   statement with no break.
 
 Run by the Makefile from the repository's root, after it builds the image and
 copies the harness out; standard library only.
@@ -169,14 +173,15 @@ def run():
     for instance in ("alpaca", "reader", "desk"):
         runner("ready", "--instance", instance)
     runner("settings", "sample_data=true")
-    # From 0.7.0 it holds two roles, and a grant names one.
+    # From 0.7.0 it holds more than one role (from 0.8.0 three), and a grant
+    # names one.
     runner("grant", "--level", "admin", "--role", "data")
     runner("grant", "--instance", "reader", "--level", "read", "--role", "reporting")
     runner("mcp", "connect", "--covers", "deployment_admin", "--covers", "alpaca:data:admin")
 
     # 1. The catalogue.
     def listed():
-        held = {d["dataset"]: d for d in call("dashboard__list_datasets", {}, "read")["data"]["datasets"]}
+        held = {d["dataset"]: d for d in call("dashboard__list_datasets", {}, "unchanged")["data"]["datasets"]}
         return held if {DAILY, LIVE, TRADES} <= set(held) else None
     held = until(90, listed, "step 1, the three datasets were not listed")
     daily, live = held[DAILY]["catalogue_entry"], held[LIVE]["catalogue_entry"]

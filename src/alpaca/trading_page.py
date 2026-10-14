@@ -11,10 +11,10 @@
   `/admin/connections/enable-trading` as SnapTrade's): a new account is
   read-only until then. Counts and codes only: an admin page shows no
   account's data.
-- Raw records (`/raw`, Open and View; connectivity): each kind kept, its
-  window and what becomes of it past it, and a raw record followed from a
-  fact's reference, shown to a person who may read an account mapped on
-  this instance; no tool of its own.
+- Raw records (`/raw`, Open and View; custody and connectivity): each kind
+  kept, its window and what becomes of it past it, and a raw record followed
+  from a fact's or a row's reference, shown to a person who may read an
+  account mapped on this instance or linked by it; no tool of its own.
 """
 
 from __future__ import annotations
@@ -192,10 +192,12 @@ async def check_enable_trading(request: meridian.Request) -> meridian.Response:
 
 
 def _may_read_mapped(request: meridian.Request) -> bool:
-    """Whether the person may read an account mapped on this instance: the
-    accounts connectivity's records are of."""
+    """Whether the person may read an account mapped on this instance (the
+    accounts connectivity's records are of) or linked by it (custody's)."""
     trader = current().trader
     scope = current().scope
+    if any(link.account_id in request.caller.read_for("custody") for link in scope.links):
+        return True
     if trader is None or scope.venue_account_map is None:
         return False
     allowed = request.caller.read_for("connectivity")
@@ -210,12 +212,12 @@ def _may_read_mapped(request: meridian.Request) -> bool:
     RAW,
     "Raw records",
     levels=["write", "read"],
-    roles="connectivity",
+    roles=["custody", "connectivity"],
     tool=False,
     why=(
         "Alpaca's answers as received, any JSON it sent, which no typed record holds; an "
-        "agent reads what they came to in the book's placements and executions, each naming "
-        "its raw record"
+        "agent reads what they came to with read_statements and read_account_activities, "
+        "and in the book's placements and executions, each naming its raw record"
     ),
 )
 async def raw_records(request: meridian.Request) -> str:

@@ -1,0 +1,17 @@
+{#- Account links, at admin: custody's, with what a link came to, and for a
+    browser without the kit a plain form per external account, linking it
+    to one of the accounts granted (the kit's account map's own `link`
+    fields: intent, external_account_id, account_id). -#}
+{% extends "meridian/roles/custody/account_links.html" %}
+{% block vendor_notices %}
+{% if notice is defined and notice %}<div class="notice good" role="status">{{ notice }}</div>{% endif %}
+{% endblock %}
+{% block vendor_rows %}
+<table class="one-line"><thead><tr><th>External account</th><th>Linked to</th><th></th></tr></thead><tbody>
+{% for account in data.external_accounts %}
+{% set link = data.links|selectattr("external_account_id", "equalto", account.external_account_id)|first %}
+<tr><td><strong>{{ account.name or account.external_account_id }}</strong>{% if account.detail %} <span class="hint">{{ account.detail }}</span>{% endif %}</td><td>{{ link.account_name if link else "Not linked" }}</td>
+<td>{% if data.accounts %}<form method="post" action="{{ action|default('') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="intent" value="link"><input type="hidden" name="external_account_id" value="{{ account.external_account_id }}"><select name="account_id" aria-label="Link {{ account.external_account_id }} to">{% for each in data.accounts %}<option value="{{ each.account_id }}">{{ each.name or each.account_id }}</option>{% endfor %}</select> <button type="submit">Link</button></form>{% endif %}</td></tr>
+{% endfor %}
+</tbody></table>
+{% endblock %}

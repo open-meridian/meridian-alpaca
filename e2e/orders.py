@@ -1,21 +1,30 @@
-"""`make e2e`'s order path (contract v22; from 0.7.0), after the data steps,
-in the same harness (e2e/run.py calls it): Alpaca holding `data` and
-`connectivity` in sample data, and the desk (e2e/desk.py) holding
-`portfolio`, `oms` and `ems`, as SnapTrade's e2e/orders.py. SIMULATED ONLY:
-the plugin's simulated brokerage (src/alpaca/synthetic_broker.py); no
-Alpaca, no paper account and no trading API is reached.
+"""`make e2e`'s order path (contract v22; from 0.7.0) and, from 0.8.0, the
+account's custody and reconciliation (contract v23), after the data steps,
+in the same harness (e2e/run.py calls it): Alpaca holding `data`, `custody`
+and `connectivity` in sample data, and the desk (e2e/desk.py) holding
+`portfolio`, `oms`, `ems` and `operations`, as SnapTrade's e2e/orders.py.
+SIMULATED ONLY: the plugin's simulated brokerage
+(src/alpaca/synthetic_broker.py); no Alpaca, no paper account and no
+trading API is reached.
 
 1. Set up: an account for the orders, the desk's grants on it, Apple's
    record named by the desk and completed, the platform asked for its
    listing; Alpaca made available and linked to the desk, the account mapped
    to the simulated account's code; trading enabled on it under the
    connectivity role's admin, on the plugin's Trading page; releases not
-   waiting for compliance (no compliance plugin here).
+   waiting for compliance (no compliance plugin here). From 0.8.0, the
+   account granted to Alpaca and linked to its account on its Account links
+   page; once its statement is in the street, the desk records the
+   account's opening balance from it, as of the day before.
 2. A buy of 10, limit, day: released, claimed, placed at Alpaca's instance,
    acknowledged with Alpaca's order ID and filled 4 then 6; the order
    filled; the book's position up by 10 with its pending lines. The order
-   the brokerage took outside the platform, on the mapped account, is left
-   alone: no order recorded, no fill (venue-originated fills are v23's).
+   the brokerage took outside the platform before the account was watched
+   is its history: no order recorded, no fill.
+2b. Contract v23: an order of 5 placed in Alpaca's own app: its fills, 2
+   then 3, reported on no placement and held unmatched; the desk accepts
+   them to a new order, which the book creates filled, the position up by
+   5.
 3. Good till date, which Alpaca takes none of: rejected `unsupported`.
 4. A replace and a cancel the desk asks for, each by its kind on the
    placement's change request: a working placement of 200 replaced at Alpaca
@@ -29,6 +38,10 @@ Alpaca, no paper account and no trading API is reached.
    finds its order by the placement's venue order ID, sends no second order,
    and cancels it there when the desk asks.
 7. `store book` prints the orders, placements and executions.
+8. Reconciliation: once Alpaca's statement shows every fill, the desk
+   compares the book's positions with it, each security's and the cash's
+   trade-date and settled quantities, and records a break for each
+   difference: none, and `store book` holds no break.
 
 Standard library only.
 """
@@ -142,10 +155,33 @@ def brokerage_orders():
     return json.loads(said.strip().splitlines()[-1])
 
 
+def at_the_brokerage(symbol, qty):
+    """An order placed in Alpaca's own app: written to the simulated
+    brokerage's state beside the plugin, which reads it again on its next
+    request; written again should the plugin's own save have crossed it."""
+    for _ in range(3):
+        said = compose(
+            "exec", "-T", "alpaca", "python", "-c",
+            "from meridian import edge; from alpaca.synthetic_broker import place_at_the_brokerage;"
+            "print(place_at_the_brokerage(edge.storage_dir() / 'synthetic-venue' / 'orders.json',"
+            f" {symbol!r}, {qty!r}))",
+        ).stdout.strip().splitlines()[-1]
+        time.sleep(3)
+        held = compose(
+            "exec", "-T", "alpaca", "python", "-c",
+            "import json; from meridian import edge;"
+            "p = edge.storage_dir() / 'synthetic-venue' / 'orders.json';"
+            "print(json.dumps([o['id'] for o in json.loads(p.read_text())['orders']]))",
+        ).stdout
+        if said in json.loads(held.strip().splitlines()[-1]):
+            return said
+    raise Failed("the order placed in Alpaca's app never reached the simulated brokerage")
+
+
 def run():
     # 1. Set up.
     account = runner("account", "E2E Orders", "--instance", "desk").strip().splitlines()[-1]
-    for role in ("portfolio", "oms", "ems"):
+    for role in ("portfolio", "oms", "ems", "operations"):
         runner("grant", "--instance", "desk", "--level", "write", "--role", role, "--accounts", account)
     runner("grant", "--instance", "desk", "--level", "admin", "--role", "ems")
     runner("grant", "--instance", "alpaca", "--level", "admin", "--role", "connectivity")
@@ -167,6 +203,26 @@ def run():
            "--post", "/admin/connections/enable-trading", f"venue_account_code={CODE}",
            "--expect", "Trading enabled")
     runner("attribute", account, "waits=false", "note=No compliance plugin in this run.")
+    # Custody (from 0.8.0): the account granted to Alpaca and linked to its
+    # account on its own Account links page; then the opening balance from
+    # its first statement, before anything is placed.
+    runner("grant", "--instance", "alpaca", "--level", "admin", "--role", "custody")
+    runner("linkable", "--instance", "alpaca", "--grant", account,
+           "--note", "The e2e's account, at Alpaca.")
+    runner("page", "--instance", "alpaca", "--level", "admin", "/links", "--until", CODE)
+    runner("form", "--instance", "alpaca", "--level", "admin", "--page", "/links",
+           "--post", "/links", "intent=link", f"external_account_id={CODE}",
+           f"account_id={account}", "--expect", f"Linked {CODE}")
+
+    def statement():
+        street = compose("run", "--rm", "-T", "store", "street").stdout
+        return street if "statement|E2E Orders|alpaca|" in street else None
+
+    street = until(90, statement, "step 1, Alpaca's statement never reached the street")
+    must("position|E2E Orders|" in street, f"step 1, the statement's rows: {street[-600:]}")
+    yesterday = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
+    opened = desk("write", f"/opening?account={account}&date={yesterday}")
+    must(opened.get("opened", 0) >= 2, f"step 1, the opening balance: {opened}")
     # The seed rule reaches the deployment from the platform in its own time:
     # each fill waits for its settlement date, so the run waits for the rule.
     today = time.strftime("%Y-%m-%d", time.gmtime())
@@ -187,10 +243,32 @@ def run():
     must(fills == [["4", "230"], ["6", "230"]], f"step 2, the fills: {executions}")
     position = [line for line in book.splitlines()
                 if line.startswith("position|E2E Orders|") and "AAPL" in line]
-    must(position and position[0].split("|")[4] == "10",
-         f"step 2, the position up by the desk's 10, nothing of the venue's own order: {position}")
+    must(position and position[0].split("|")[4] == "13",
+         f"step 2, the position the opening's 3 and the desk's 10, nothing of the venue's "
+         f"own order taken before: {position}")
     listed = desk("write", f"/orders?account={account}")["orders"]
     must(len(listed) == 1, f"step 2, no order recorded for the venue's own: {listed}")
+
+    # 2b. An order placed in Alpaca's own app (contract v23).
+    outside = at_the_brokerage("AAPL", "5")
+
+    def unmatched():
+        held = desk("write", f"/unmatched?account={account}")["executions"]
+        mine = [e for e in held if e["venue_order_id"] == outside]
+        return mine if sum(int(e["quantity"]) for e in mine) == 5 else None
+
+    fills = until(90, unmatched, "step 2b, the order placed in Alpaca's app was not reported")
+    must(len(fills) == 2, f"step 2b, its fills, 2 then 3, on no placement: {fills}")
+    desk("write", "/accept?executions=" + ",".join(e["execution_id"] for e in fills))
+
+    def accepted():
+        orders = desk("write", f"/orders?account={account}")["orders"]
+        made = [o for o in orders if any(p["venue_order_id"] == outside for p in o["placements"])]
+        return made[0] if made and made[0]["state"] == "ORDER_STATE_FILLED" else None
+
+    accepted_order = until(60, accepted, "step 2b, the accept made no filled order")
+    must(desk("write", f"/unmatched?account={account}")["executions"] == [],
+         "step 2b, nothing left unmatched")
     must(any(line.startswith("pending|E2E Orders|") for line in book.splitlines()),
          "step 2, pending to the settlement date the date read gave")
 
@@ -263,14 +341,29 @@ def run():
     book = compose("run", "--rm", "-T", "store", "book").stdout
     for wanted in ("order|E2E Orders|", "placement|E2E Orders|", "execution|E2E Orders|"):
         must(wanted in book, f"step 7, store book prints {wanted!r}")
+
+    # 8. Reconciled: Alpaca's statement, once it shows every fill, against
+    # the book, with no break.
+    def agreed():
+        said = desk("write", f"/compare?account={account}")
+        return said if said.get("street", 0) >= 2 and not said["breaks"] else None
+
+    until(90, agreed, "step 8, the book and Alpaca's statement never agreed")
+    reconciled = desk("write", f"/compare?account={account}&record=1")
+    must(reconciled["breaks"] == [], f"step 8, a break: {reconciled}")
+    book = compose("run", "--rm", "-T", "store", "book").stdout
+    must("break|E2E Orders|" not in book, "step 8, store book holds no break")
     sent = brokerage_orders()
     return (
         f"the order path: trading enabled on {CODE} under the connectivity role's admin, the "
         f"desk's buy of 10 acknowledged ({held['venue_order_id']}) and filled 4 then 6, each with "
-        "its settlement date, the position up by 10, the order the brokerage took outside the "
-        "platform left alone; good till date rejected unsupported; a replace at Alpaca to its new "
+        "its settlement date, the position up by 10, the order the brokerage took before the "
+        "account was watched left alone; an order placed in Alpaca's app reported on no "
+        f"placement and accepted to a new order ({accepted_order['order_id']}); good till "
+        "date rejected unsupported; a replace at Alpaca to its new "
         f"order ({held4['venue_order_id']}), one not offered refused unsupported, and a cancel at "
         "Alpaca; a placement held under a pause and sent when it lifted; a stop's cancel at once; "
         f"a restart sending no second order and cancelling at Alpaca; {len(sent)} orders at the "
-        "simulated brokerage in all"
+        f"simulated brokerage in all; the account linked, opened from Alpaca's statement and "
+        f"reconciled against the next with no break ({reconciled['compared']} positions)"
     )

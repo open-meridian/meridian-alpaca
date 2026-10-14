@@ -1,9 +1,9 @@
-"""The data suite, the SDK's own (meridian.suites, contract v20), run unchanged
-against this plugin: every case mapped to the plugin's own conversion, from
-Alpaca's recorded exchange and stream, through the lake's half it runs in
+"""The data suite, the SDK's own (meridian.suites; contract v23 from 0.8.0),
+run unchanged against this plugin: every case mapped to the plugin's own
+conversion, from Alpaca's recorded exchange and stream, through the lake's half it runs in
 production (lake.py), against the suite's `Recorder`.
 
-Six cases are not presented, each with why (`NOT_PRESENTED`). Two are
+Nine cases are not presented, each with why (`NOT_PRESENTED`). Two are
 about kinds of data Alpaca's US stock data never publishes (`about`, from
 contract v19): a currency's rate against another currency, and a crypto
 asset's price (its crypto is left to the crypto pair). Two are about a field
@@ -13,7 +13,9 @@ guesses from the price -- a regular trade naming the taker's side, and a
 maker's side inverted. And two are contract v22's calendar cases (`about`
 calendars and settlement dates): the plugin dates a bar by the session's
 close in New York as Alpaca states it, and never reads a settlement calendar
-or asks for a settlement date. Every other case about trades is presented.
+or asks for a settlement date. And from contract v23, three are about an
+event contract's outcomes (`about` outcomes), which Alpaca's stock data never
+states. Every other case about trades is presented.
 """
 
 from __future__ import annotations
@@ -65,6 +67,11 @@ NOT_PRESENTED = {
     "asks-for-a-settlement-date": (
         "records bars and trades as Alpaca publishes them; never computes a settlement date"
     ),
+    "records-an-outcome": "Alpaca's stock data lists no event contract, so states no outcome",
+    "restates-a-disputed-outcome": (
+        "Alpaca's stock data lists no event contract, so states no outcome"
+    ),
+    "records-a-partial-payout": "Alpaca's stock data lists no event contract, so states no outcome",
 }
 
 #: A moment in the session, for the stream's messages.

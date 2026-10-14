@@ -1,5 +1,6 @@
-"""The connectivity role (contract v22; meridian-design plans/an-order-reaches-
-a-venue-through-the-book; W11.8 to W11.12, W11.20), from 0.7.0, in
+"""The connectivity role (contract v22, and v23's venue-originated fills;
+meridian-design plans/an-order-reaches-a-venue-through-the-book; W11.8 to
+W11.12, W11.20), from 0.7.0, in
 SnapTrade 0.16.0's shape (its trading.py), over Alpaca's Trading API
 (venue.py, the adapter; broker.py, the client).
 
@@ -75,12 +76,27 @@ replaced reports it.
 **Its catalogue.** On start, and when trading is enabled on an account, it
 publishes per venue account code the order types and times in force the
 venue takes for it (ReportVenueCatalogue), and none for a read-only one;
-`execution_acknowledgement` unset; never a strategy.
+`execution_acknowledgement` none, the venue taking no execution
+acknowledgement (contract v23); never a strategy.
 
-**No venue-originated orders** (ruled 2026-10-13): an order the venue lists
-on a mapped account that no placement names is never recorded, never
-placed, and its fills are not reported in v22: it is kept in the venue's
-answer as received and said once in the log.
+**Venue-originated fills** (contract v23; the order-path plan's rulings 1
+and 8 to 19). An order the venue lists on a mapped account that no
+placement names -- one placed in the broker's own app -- is never recorded
+as an order: only its fills are reported, on no placement
+(ReportExecution naming the venue account code, the instrument its symbol
+resolves to, the side, the venue order ID and the client order ID it
+carries), each derived to its ID as any fill is, so the book holds it
+unmatched until its `ems` accepts it or answers it DK. Only fills after the
+plugin first watched the account are reported (`trading/originated.json`
+keeps when, and each such order's fills): an order filled before then is
+the account's history, which its opening balance holds. Once accepted, the
+book creates a placement at filled naming the venue order; the plugin hears
+it (PlacementUpdated) and reports the order's later fills on it. After a
+DK, a later fill is reported on no placement again. The venue is told
+nothing either way: it takes no execution acknowledgement. A fill whose
+symbol names none of the deployment's records is reported missing
+(ReportMissingInstrument) and waits, since a fill on no placement names its
+instrument. A venue order with no fill is never reported.
 
 **A venue's symbol on a fill** that is not the symbol placed is resolved by
 the fill's time (ResolveIdentifier) and, where it names none of the
@@ -89,7 +105,7 @@ is reported on the placement either way.
 
 What it does not do: a locate (no locate API), a place of execution (the
 venue states none on a fill), a charge on a placement (the venue states no
-fee naming an order), a venue-originated fill (v23's).
+fee naming an order), an execution acknowledgement (the venue takes none).
 """
 
 from __future__ import annotations
@@ -231,6 +247,9 @@ class VenueOrder:
     client_order_id: str
     status: str
     symbol: str = ""
+    #: The order's side in the venue's words (contract v23's fills on no
+    #: placement name it).
+    side: str = ""
     quantity: Decimal | None = None
     filled: Decimal = Decimal(0)
     average: Decimal | None = None
@@ -278,6 +297,8 @@ class Venue(Protocol):
     statuses: dict[str, str]
     #: The sides it places, by the contract's, in its words.
     sides: dict[int, str]
+    #: The contract's side for each of the venue's words for one.
+    sides_said: dict[str, int]
     source: str
 
     def accounts(self) -> tuple[str, ...]: ...
@@ -374,6 +395,118 @@ class Worked:
     # The latest moment the venue stated the order changed, as last read:
     # an update heard after a later read is older news, and passed over.
     seen: datetime | None = None
+    # A venue-originated order's placement, created at filled by its ems's
+    # accept (contract v23): only its later fills and busts are reported.
+    adopted: bool = False
+
+
+@dataclass
+class Originated:
+    """A venue order no placement names, on a mapped account (contract v23):
+    its fills reported on no placement, until an accept's placement names it.
+    `filled` counts from what it had filled before the plugin watched the
+    account, which is never reported."""
+
+    venue_order_id: str
+    code: str
+    client_order_id: str = ""
+    symbol: str = ""
+    side: int = 0
+    instrument_id: str = ""
+    currency: str = ""
+    filled: Decimal = Decimal(0)
+    average: Decimal | None = None
+    fills: list[tuple[str, Decimal, str]] = field(default_factory=list)
+    executions: dict[str, str] = field(default_factory=dict)
+    adopted: str = ""
+    missing: bool = False
+
+    def held(self) -> Json:
+        return {
+            "venue_order_id": self.venue_order_id,
+            "code": self.code,
+            "client_order_id": self.client_order_id,
+            "symbol": self.symbol,
+            "side": self.side,
+            "instrument_id": self.instrument_id,
+            "currency": self.currency,
+            "filled": str(self.filled),
+            "average": None if self.average is None else str(self.average),
+            "fills": [[f, str(c), d] for f, c, d in self.fills],
+            "executions": self.executions,
+            "adopted": self.adopted,
+        }
+
+    @staticmethod
+    def of(held: Json) -> Originated:
+        average = number(held.get("average"))
+        return Originated(
+            venue_order_id=str(held.get("venue_order_id") or ""),
+            code=str(held.get("code") or ""),
+            client_order_id=str(held.get("client_order_id") or ""),
+            symbol=str(held.get("symbol") or ""),
+            side=int(held.get("side") or 0),
+            instrument_id=str(held.get("instrument_id") or ""),
+            currency=str(held.get("currency") or ""),
+            filled=number(held.get("filled")) or Decimal(0),
+            average=average,
+            fills=[
+                (str(f), number(c) or Decimal(0), str(d)) for f, c, d in held.get("fills") or []
+            ],
+            executions={str(k): str(v) for k, v in (held.get("executions") or {}).items()},
+            adopted=str(held.get("adopted") or ""),
+        )
+
+
+class Watched:
+    """When the plugin first watched each mapped account, and the venue
+    orders it has reported fills of on no placement (contract v23), kept in
+    a JSON file in the plugin's storage (`trading/originated.json`), written
+    whole on every change, so a restart neither reports a fill twice nor
+    takes an account's history for new fills."""
+
+    def __init__(self, file: Path | None) -> None:
+        self._file = file
+        self.since: dict[str, datetime] = {}
+        self.orders: dict[str, Originated] = {}
+        if file is not None and file.exists():
+            with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
+                held = json.loads(file.read_text())
+                for code, at in (held.get("since") or {}).items():
+                    when = moment(at)
+                    if when is not None:
+                        self.since[str(code)] = when
+                for each in held.get("orders") or []:
+                    order = Originated.of(each)
+                    if order.venue_order_id:
+                        self.orders[order.venue_order_id] = order
+
+    def first(self, code: str, now: datetime) -> datetime:
+        """When the plugin first watched `code`: now, the first time."""
+        if code not in self.since:
+            self.since[code] = now
+            self.save()
+        return self.since[code]
+
+    def save(self) -> None:
+        if self._file is None:
+            return
+        self._file.parent.mkdir(parents=True, exist_ok=True)
+        made, written = tempfile.mkstemp(dir=self._file.parent, suffix=".tmp")
+        try:
+            with os.fdopen(made, "w") as file:
+                json.dump(
+                    {
+                        "since": {c: at.isoformat() for c, at in sorted(self.since.items())},
+                        "orders": [o.held() for o in self.orders.values()],
+                    },
+                    file,
+                    sort_keys=True,
+                )
+            os.replace(written, self._file)
+        except BaseException:
+            Path(written).unlink(missing_ok=True)
+            raise
 
 
 @dataclass
@@ -399,6 +532,7 @@ class Trader:
         sent: Noted | None = None,
         enabled: Noted | None = None,
         scope: Callable[[], meridian.AccountScope] = meridian.AccountScope,
+        watched: Watched | None = None,
     ) -> None:
         self._plugin = plugin
         self._venue = venue
@@ -412,7 +546,12 @@ class Trader:
         self.held: dict[str, ops.Placement] = {}
         self.decided: set[str] = set()
         self.venue_orders: set[str] = set()
-        self.outside: set[str] = set()
+        #: Venue-originated orders (contract v23): when each mapped account
+        #: was first watched, and each order's fills on no placement.
+        self.watched = watched if watched is not None else Watched(None)
+        #: The venue orders filled before the plugin watched their account,
+        #: said once in the log.
+        self.history: set[str] = set()
         self.watermark: ops.Watermark | None = None
         self.published: dict[str, Catalogue] = {}
         #: The accounts the key reached when last asked, by their codes.
@@ -491,6 +630,8 @@ class Trader:
     ) -> None:
         if placement.connectivity_instance_id != self.me:
             return
+        if self._adopt(placement):
+            return
         self.venue_orders.update(placement.venue_order_ids)
         if placement.venue_order_id:
             self.venue_orders.add(placement.venue_order_id)
@@ -522,6 +663,41 @@ class Trader:
         if worked is not None:
             await self._asked_to_change(placement, order, worked)
 
+    def _adopt(self, placement: ops.Placement) -> bool:
+        """A placement an accept created at filled for a venue-originated
+        order (contract v23): its order's later fills are reported on it from
+        here. True where the placement is one."""
+        held = self.watched.orders.get(placement.venue_order_id)
+        if held is None or not placement.venue_order_id:
+            return False
+        if held.adopted == placement.placement_id and placement.placement_id in self.working:
+            return True
+        held.adopted = placement.placement_id
+        self.watched.save()
+        self.working[placement.placement_id] = Worked(
+            placement_id=placement.placement_id,
+            order_id=placement.order_id,
+            code=placement.venue_account_code or held.code,
+            instrument_id=held.instrument_id,
+            currency=held.currency or "USD",
+            venue_order_id=held.venue_order_id,
+            symbol=held.symbol,
+            filled=held.filled,
+            average=held.average,
+            fills=list(held.fills),
+            executions=dict(held.executions),
+            acknowledged=True,
+            adopted=True,
+        )
+        self.decided.add(placement.placement_id)
+        self.venue_orders.add(held.venue_order_id)
+        log.info(
+            "%s: the accept's placement %s names it; its later fills are reported there",
+            held.venue_order_id,
+            placement.placement_id,
+        )
+        return True
+
     async def _order_of(self, placement: ops.Placement) -> ops.Order | None:
         listed = await self._plugin.list_orders(account_id=placement.account_id)
         for order in listed.orders:
@@ -538,6 +714,40 @@ class Trader:
             return
         async with self._lock:
             await self._resume(placement, None, ())
+
+    async def on_execution(self, heard: Any) -> None:
+        """An execution this plugin reported, as the book recorded it
+        (contract v23): an accept's placement adopted where the placement's
+        delivery has not come yet; a DK said, the venue told nothing."""
+        execution: ops.Execution = heard.message.execution
+        if not self.started.is_set():
+            return
+        async with self._lock:
+            held = self.watched.orders.get(execution.venue_order_id)
+            if held is None:
+                return
+            if execution.state == ops.EXECUTION_STATE_DONT_KNOW:
+                log.info(
+                    "%s: %s answered DK (%s): the venue takes no acknowledgement, so it is "
+                    "told nothing; a later fill is reported on no placement again",
+                    held.venue_order_id,
+                    execution.execution_id,
+                    ops.DkReason.Name(execution.dk_reason),
+                )
+            elif (
+                execution.state == ops.EXECUTION_STATE_MATCHED
+                and execution.placement_id
+                and not held.adopted
+            ):
+                self._adopt(
+                    ops.Placement(
+                        placement_id=execution.placement_id,
+                        order_id=execution.order_id,
+                        connectivity_instance_id=self.me,
+                        venue_order_id=execution.venue_order_id,
+                        venue_account_code=held.code,
+                    )
+                )
 
     async def on_instruction(self, heard: Any) -> None:
         instruction: ops.TradingInstruction = heard.message.instruction
@@ -941,6 +1151,8 @@ class Trader:
             watched = {w.code for w in self.working.values() if w.ended_polls <= ENDED_POLLS}
             codes = sorted(watched | (self.mapped() & set(await self._reached(venue))))
             for code in codes:
+                if code in self.mapped():
+                    self.watched.first(code, self._now())
                 try:
                     orders, key = await self._call(venue.orders, code)
                 except (VenueRefused, VenueUnanswered) as failed:
@@ -978,23 +1190,162 @@ class Trader:
             if record is None:
                 continue
             await self._report_status(venue, worked, record, key, by_id)
-        if any(w.unanswered for w in mine):
+        if any(w.unanswered for w in mine) or code not in self.mapped():
             return
         placed = {w.venue_order_id for w in self.working.values()} | self.venue_orders
         for record in orders:
-            if record.order_id in placed or record.order_id in self.outside:
+            if record.order_id in placed:
                 continue
             if any(record.client_order_id == w.placement_id for w in self.working.values()):
                 continue
             if record.replaces and record.replaces in placed:
                 continue
-            self.outside.add(record.order_id)
-            log.info(
-                "%s: the venue lists an order no placement names (%s), placed outside the "
-                "platform: kept as received, not reported",
-                code,
-                record.order_id,
+            await self._originated(venue, code, record, key)
+
+    async def _originated(self, venue: Venue, code: str, record: VenueOrder, key: str) -> None:
+        """A venue order no placement names (contract v23): each fill after
+        the plugin first watched the account reported on no placement."""
+        held = self.watched.orders.get(record.order_id)
+        if held is None:
+            if not record.filled:
+                return
+            since = self.watched.since.get(code)
+            last = record.filled_at or record.updated_at or record.placed_at
+            if since is None or (last is not None and last < since):
+                if record.order_id not in self.history:
+                    self.history.add(record.order_id)
+                    log.info(
+                        "%s: the venue lists an order no placement names (%s), filled before "
+                        "this plugin watched the account: its history, kept as received, not "
+                        "reported",
+                        code,
+                        record.order_id,
+                    )
+                return
+            held = Originated(
+                venue_order_id=record.order_id,
+                code=code,
+                client_order_id=record.client_order_id,
+                symbol=record.symbol,
+                side=venue.sides_said.get(record.side, 0),
             )
+            self.watched.orders[record.order_id] = held
+            self.watched.save()
+        if held.adopted:
+            return
+        if record.filled < held.filled:
+            await self._originated_busts(held, record.filled, key)
+            return
+        if record.filled == held.filled:
+            return
+        at = record.filled_at or record.updated_at or self._now()
+        if not held.instrument_id and not await self._originated_instrument(venue, held, at):
+            return
+        if not held.side:
+            log.warning(
+                "%s: the venue's side %r names none of the contract's: not reported",
+                held.venue_order_id,
+                record.side,
+            )
+            return
+        grown = record.filled - held.filled
+        kind = ops.EXECUTION_KIND_VENUE_REPORTED
+        if record.last_fill is not None and record.last_fill[0] == grown:
+            price = record.last_fill[1]
+        elif record.average is not None:
+            price, _ = fill_price(held.filled, held.average, record.filled, record.average)
+            kind = ops.EXECUTION_KIND_INFERRED
+        else:
+            return
+        traded = trade_date_of(at)
+        settles = await self._plugin.compute_date(
+            settlement=ops.SettlementDateInputs(
+                instrument_id=held.instrument_id, trade_date=traded.isoformat()
+            ),
+            as_of_ns=_ns(at),
+        )
+        if not (settles.outcome == ops.DATE_OUTCOME_COMPUTED and settles.date):
+            return
+        derived = execution_id(held.venue_order_id, record.filled)
+        done = await self._plugin.report_execution(
+            venue_account_code=code,
+            instrument_id=held.instrument_id,
+            side=held.side,
+            venue_order_id=held.venue_order_id,
+            venue_client_order_id=held.client_order_id,
+            venue_execution_id=derived,
+            kind=kind,
+            source=ops.EXECUTION_SOURCE_PRIMARY,
+            quantity=grown,
+            price=meridian.Money(price, held.currency or "USD"),
+            trade_time_ns=_ns(at),
+            trade_date=traded.isoformat(),
+            finality=meridian.Finality(level=ops.FINALITY_LEVEL_FINAL, at_ns=_ns(at)),
+            computed_settlement_date=settles.date,
+            settlement_date_basis=basis_of(settles.basis),
+            raw_record=self._raw(key),
+            idempotency_key=f"fill:{derived}",
+        )
+        if done.HasField("execution") and done.execution.execution_id:
+            held.executions[derived] = done.execution.execution_id
+        held.fills.append((derived, record.filled, traded.isoformat()))
+        held.filled = record.filled
+        held.average = record.average
+        self.watched.save()
+        log.info(
+            "%s: a fill of %s on no placement (%s), placed outside the platform",
+            code,
+            grown,
+            held.venue_order_id,
+        )
+
+    async def _originated_instrument(self, venue: Venue, held: Originated, at: datetime) -> bool:
+        """The record a venue-originated order's symbol names, and its
+        currency; reported missing, once, where it names none."""
+        identifiers = [meridian.Identifier(scheme="symbol", value=held.symbol, source=venue.source)]
+        found = await self._plugin.resolve_identifier(identifiers=identifiers, as_of_ns=_ns(at))
+        if not (found.found and found.instrument_id):
+            if not held.missing:
+                held.missing = True
+                await self._plugin.report_missing_instrument(
+                    source=venue.source,
+                    identifiers=identifiers,
+                    as_of_ns=_ns(at),
+                    reason=found.miss_reason or ops.MISS_REASON_NOT_FOUND,
+                    observed_at_ns=_ns(self._now()),
+                )
+            return False
+        held.instrument_id = str(found.instrument_id)
+        record = await self._plugin.resolve_instrument(instrument_id=held.instrument_id)
+        held.currency = (record.instrument.currency if record.found else "") or "USD"
+        return True
+
+    async def _originated_busts(self, held: Originated, filled: Decimal, key: str) -> None:
+        """Each fill on no placement beyond what the venue now states filled,
+        busted: closed in the book with nothing to answer (ruling 18)."""
+        for fill, cumulative, traded in sorted(held.fills, key=lambda f: f[1], reverse=True):
+            if cumulative <= filled:
+                break
+            busted = held.executions.get(fill, "")
+            if busted:
+                await self._plugin.report_execution(
+                    venue_account_code=held.code,
+                    instrument_id=held.instrument_id,
+                    side=held.side,
+                    venue_order_id=held.venue_order_id,
+                    venue_execution_id=bust_id(fill),
+                    kind=ops.EXECUTION_KIND_VENUE_REPORTED,
+                    source=ops.EXECUTION_SOURCE_PRIMARY,
+                    quantity=Decimal(0),
+                    price=meridian.Money(held.average or Decimal(0), held.currency or "USD"),
+                    trade_date=traded,
+                    supersedes=busted,
+                    raw_record=self._raw(key),
+                    idempotency_key=f"bust:{fill}",
+                )
+            held.fills.remove((fill, cumulative, traded))
+        held.filled = max([c for _, c, _ in held.fills], default=filled)
+        self.watched.save()
 
     async def on_update(self, event: str, record: VenueOrder, fill: Fill | None, key: str) -> None:
         """One of the venue's trade updates (Alpaca's stream): the order as it
@@ -1050,6 +1401,13 @@ class Trader:
             if worked.seen is not None and record.updated_at < worked.seen:
                 return
             worked.seen = record.updated_at
+        if worked.adopted:
+            # The accept's placement, created at filled: its order's later
+            # fills and busts alone (contract v23).
+            await self._fills(venue, worked, record, key, fill)
+            if venue.statuses.get(record.status) in (FILLED, CANCELLED, EXPIRED, REJECTED):
+                worked.ended = worked.ended or "filled"
+            return
         category = venue.statuses.get(record.status)
         if category is None:
             if worked.unknown != record.status:
@@ -1205,6 +1563,7 @@ class Trader:
         done = await self._plugin.report_execution(
             placement_id=worked.placement_id,
             venue_account_code=worked.code,
+            venue_order_id=worked.venue_order_id,
             venue_execution_id=derived,
             kind=kind,
             source=ops.EXECUTION_SOURCE_PRIMARY,
@@ -1268,6 +1627,7 @@ class Trader:
             await self._plugin.report_execution(
                 placement_id=worked.placement_id,
                 venue_account_code=worked.code,
+                venue_order_id=worked.venue_order_id,
                 venue_execution_id=bust_id(fill),
                 kind=ops.EXECUTION_KIND_VENUE_REPORTED,
                 source=ops.EXECUTION_SOURCE_PRIMARY,
@@ -1331,6 +1691,9 @@ class Trader:
             await self._plugin.report_venue_catalogue(
                 catalogue=meridian.VenueCatalogue(
                     venue_account_code=code,
+                    # The venue takes no execution acknowledgement, BN or Q
+                    # (contract v23): a DK's ems is told the venue is not.
+                    execution_acknowledgement=ops.EXECUTION_ACKNOWLEDGEMENT_NONE,
                     order_types=[
                         meridian.VenueOrderType(
                             order_type=ops.OrderType.Name(each),
@@ -1357,6 +1720,7 @@ class Trader:
                 self._plugin.receive(
                     placement_updated=self.on_placement,
                     trading_instruction_changed=self.on_instruction,
+                    execution_recorded=self.on_execution,
                     seed=False,
                 )
             )
@@ -1435,9 +1799,11 @@ def basis_of(basis: ops.DateBasis) -> meridian.DateBasis:
     )
 
 
-def trading_files(base: Path | None) -> tuple[Path | None, Path | None]:
-    """Where the placements sent and the accounts trading is enabled on are
-    noted: `trading/sent.json` and `trading/enabled.json` in storage."""
+def trading_files(base: Path | None) -> tuple[Path | None, Path | None, Path | None]:
+    """Where the placements sent, the accounts trading is enabled on, and
+    the venue-originated orders are noted: `trading/sent.json`,
+    `trading/enabled.json` and `trading/originated.json` in storage."""
     if base is None:
-        return None, None
-    return base / "trading" / "sent.json", base / "trading" / "enabled.json"
+        return None, None, None
+    held = base / "trading"
+    return held / "sent.json", held / "enabled.json", held / "originated.json"

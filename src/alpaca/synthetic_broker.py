@@ -1,11 +1,13 @@
 """Synthetic Alpaca's Trading API: a simulated brokerage behind the shapes of
-Alpaca's account and its orders, for sample data, the tests and `make e2e`
-(from 0.7.0).
+Alpaca's account, positions, activities and orders, for sample data, the
+tests and `make e2e` (from 0.7.0; the account's positions and activities
+from 0.8.0).
 
 SIMULATED ONLY. Nothing here reaches Alpaca, its paper trading API or any
 brokerage: an order "placed" here is a line in this module's state, and
 every answer is shaped like Alpaca's own (its order object, its error body,
-its account, its trade updates), invented, every value of it. A
+its account, its positions, its activities, its trade updates), invented,
+every value of it. A
 paper run against Alpaca is the product owner's alone, by hand, and never
 this.
 
@@ -13,13 +15,24 @@ It is a `broker.Send`: broker.py speaks to it exactly as to Alpaca, so the
 same code is exercised. What it holds survives the plugin's restart, as a
 brokerage's orders do: a JSON file in the plugin's storage
 (`synthetic-venue/orders.json`), written whole on every change; with none
-given (a test) it lives in the process.
+given (a test) it lives in the process. Where the file changes beside it
+(an order placed in Alpaca's own app, `place_at_the_brokerage`), the next
+request reads it again.
 
-The account (`SYN-ALP-1001`) holds one order from the start, three AAPL
-bought at the brokerage outside the platform on 2026-09-02
-(`syn-out-0001`): the order a test and the e2e show the plugin reads and
-leaves alone (no order recorded, no fill reported: venue-originated fills
-are v23's).
+The account (`SYN-ALP-1001`, a margin account, multiplier 2) opens with a
+cash deposit of 100,000 dollars on 2026-09-01, and holds one order from the
+start, three AAPL bought at the brokerage outside the platform on
+2026-09-02 (`syn-out-0001`), which paid a dividend on 2026-09-15: the
+history custody reads, and an order filled before the plugin watched the
+account, which connectivity leaves alone. An order placed in Alpaca's own
+app later (`place_at_the_brokerage`: `syn-app-<n>`, its client order ID
+Alpaca's own) is worked as any other, and its fills are the venue-originated
+fills connectivity reports on no placement (contract v23).
+
+Each fill is also the account's activity, as Alpaca lists it (a `FILL`
+naming the order, its quantity, price and cumulative quantity); the
+positions and the cash are what the activities come to, a bust taking its
+fill back.
 
 How it works an order, each read of the orders taking it one step on, so a
 test and the e2e see every state, and each step heard on its trade updates
@@ -56,6 +69,7 @@ import json
 import os
 import tempfile
 import urllib.parse
+import zlib
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -78,6 +92,7 @@ FILLS_AT_ONCE = Decimal(100)
 PRICES = {"AAPL": Decimal("227.41"), "SPY": Decimal("575.44")}
 PRICE = Decimal("100.00")
 OUTSIDE_ID = "syn-out-0001"
+DEPOSIT = Decimal("100000.00")
 WORKING = ("new", "partially_filled", "accepted", "pending_new", ODD_STATUS)
 
 
@@ -90,7 +105,7 @@ def _text(value: Decimal) -> str:
 
 
 def _seeded() -> dict[str, Any]:
-    """The account's one order before the platform placed anything."""
+    """The account's history before the platform placed anything."""
     outside = {
         "id": OUTSIDE_ID,
         "client_order_id": "placed-at-the-brokerage",
@@ -112,7 +127,55 @@ def _seeded() -> dict[str, Any]:
         "replaced_by": None,
         "replaces": None,
     }
-    return {"next": 1, "orders": [outside]}
+    return {
+        "next": 1,
+        "orders": [outside],
+        "activities": [
+            {
+                "id": "20260901000000000::00000000-0000-4000-8000-0000000c5d01",
+                "activity_type": "CSD",
+                "date": "2026-09-01",
+                "net_amount": _text(DEPOSIT),
+                "description": "Deposit",
+                "status": "executed",
+            },
+            {
+                "id": "20260902143101000::00000000-0000-4000-8000-0000000f0001",
+                "activity_type": "FILL",
+                "transaction_time": "2026-09-02T14:31:01.000000Z",
+                "type": "fill",
+                "price": "226.10",
+                "qty": "3",
+                "side": "buy",
+                "symbol": "AAPL",
+                "leaves_qty": "0",
+                "order_id": OUTSIDE_ID,
+                "cum_qty": "3",
+                "order_status": "filled",
+            },
+            {
+                "id": "20260915000000000::00000000-0000-4000-8000-0000000d1001",
+                "activity_type": "DIV",
+                "date": "2026-09-15",
+                "net_amount": "0.75",
+                "description": "Cash DIV @ 0.25, Pos QTY: 3",
+                "symbol": "AAPL",
+                "qty": "3",
+                "per_share_amount": "0.25",
+                "status": "executed",
+            },
+        ],
+    }
+
+
+def place_at_the_brokerage(
+    state: Path, symbol: str, qty: str, side: str = "buy", now: datetime | None = None
+) -> str:
+    """An order placed in Alpaca's own app, outside the platform, written to
+    the simulated brokerage's state beside it (the e2e's way in, and a
+    test's): a market order, worked from the next read on. Its ID."""
+    broker = SyntheticBroker(lambda: now or datetime.now(UTC), state)
+    return broker.at_the_brokerage(symbol, qty, side)
 
 
 class SyntheticBroker:
@@ -121,6 +184,7 @@ class SyntheticBroker:
     def __init__(self, now: Callable[[], datetime], state: Path | None = None) -> None:
         self._now = now
         self._file = state
+        self._stamp: float = 0.0
         self.held: dict[str, Any] = {}
         #: The trade updates each step made, as Alpaca's stream says them,
         #: for the stream to deliver (updates.py); not kept across a restart.
@@ -139,6 +203,20 @@ class SyntheticBroker:
             except (OSError, ValueError):
                 held = None
         self.held = held if isinstance(held, dict) and "orders" in held else _seeded()
+        self.held.setdefault("activities", [])
+        self._stamp = self._mtime()
+
+    def _mtime(self) -> float:
+        try:
+            return self._file.stat().st_mtime if self._file is not None else 0.0
+        except OSError:
+            return 0.0
+
+    def _reload_if_changed(self) -> None:
+        """The state as written beside this process (an order placed in
+        Alpaca's own app), read again where the file changed."""
+        if self._file is not None and self._mtime() != self._stamp:
+            self._load()
 
     def _save(self) -> None:
         if self._file is None:
@@ -152,6 +230,39 @@ class SyntheticBroker:
         except BaseException:
             Path(written).unlink(missing_ok=True)
             raise
+        self._stamp = self._mtime()
+
+    def at_the_brokerage(self, symbol: str, qty: str, side: str = "buy") -> str:
+        """An order placed in Alpaca's own app: a market order with Alpaca's
+        own client order ID, worked from the next read on."""
+        self._reload_if_changed()
+        number = sum(1 for o in self.held["orders"] if o["id"].startswith("syn-app-")) + 1
+        now = _stamp(self._now())
+        order = {
+            "id": f"syn-app-{number:04d}",
+            "client_order_id": f"alpaca-app-{zlib.crc32(now.encode()):08x}",
+            "symbol": symbol,
+            "asset_class": "us_equity",
+            "side": side,
+            "type": "market",
+            "time_in_force": "day",
+            "qty": qty,
+            "filled_qty": "0",
+            "filled_avg_price": None,
+            "limit_price": None,
+            "stop_price": None,
+            "status": "new",
+            "created_at": now,
+            "submitted_at": now,
+            "updated_at": now,
+            "filled_at": None,
+            "replaced_by": None,
+            "replaces": None,
+        }
+        self.held["orders"].append(order)
+        self._update("new", order)
+        self._save()
+        return str(order["id"])
 
     # ── The transport ───────────────────────────────────────────────────
 
@@ -161,9 +272,14 @@ class SyntheticBroker:
         parsed = urllib.parse.urlparse(url)
         path = parsed.path
         self.asked.append((method, path))
+        self._reload_if_changed()
         asked = parse(body.decode()) if body else {}
         if method == "GET" and path == "/v2/account":
             return _ok(self._account())
+        if method == "GET" and path == "/v2/positions":
+            return _ok(self._positions())
+        if method == "GET" and path == "/v2/account/activities":
+            return _ok(self._activities(urllib.parse.parse_qs(parsed.query)))
         if method == "GET" and path == "/v2/orders":
             for order in self.held["orders"]:
                 self._step(order)
@@ -312,8 +428,30 @@ class SyntheticBroker:
         order["updated_at"] = _stamp(now + timedelta(microseconds=1))
         filled = Decimal(order["filled_qty"])
         if filled > before:
-            event = "fill" if order["status"] == "filled" else "partial_fill"
-            self._update(event, order, qty=filled - before, price=price)
+            self._filled(order, filled - before, price, now)
+
+    def _filled(self, order: dict[str, Any], qty: Decimal, price: Decimal, at: datetime) -> None:
+        """A step's fill, on the trade updates and in the account's activity."""
+        event = "fill" if order["status"] == "filled" else "partial_fill"
+        self._update(event, order, qty=qty, price=price)
+        number = len(self.held["activities"]) + 1
+        self.held["activities"].append(
+            {
+                "id": f"{at.strftime('%Y%m%d%H%M%S%f')[:17]}::00000000-0000-4000-8000-"
+                f"{number:012d}",
+                "activity_type": "FILL",
+                "transaction_time": _stamp(at),
+                "type": event,
+                "price": _text(price),
+                "qty": _text(qty),
+                "side": order["side"],
+                "symbol": order["symbol"],
+                "leaves_qty": _text(Decimal(order["qty"]) - Decimal(order["filled_qty"])),
+                "order_id": order["id"],
+                "cum_qty": order["filled_qty"],
+                "order_status": order["status"],
+            }
+        )
 
     def _update(self, event: str, order: Mapping[str, Any], **fill: Decimal) -> None:
         said: dict[str, Any] = {
@@ -329,14 +467,94 @@ class SyntheticBroker:
             )
         self.updates.append(said)
 
-    # ── The account ─────────────────────────────────────────────────────
+    # ── The account, its positions and its activities ──────────────────
+
+    def _busted(self) -> set[str]:
+        """The orders whose fills the brokerage took back."""
+        return {
+            o["id"]
+            for o in self.held["orders"]
+            if o["symbol"] == BUSTED and o["status"] == "canceled"
+        }
+
+    def _fills(self) -> list[dict[str, Any]]:
+        busted = self._busted()
+        return [
+            a
+            for a in self.held["activities"]
+            if a["activity_type"] == "FILL" and a.get("order_id") not in busted
+        ]
+
+    def _activities(self, query: Mapping[str, list[str]]) -> list[dict[str, Any]]:
+        """The account's activities, oldest first, on or after `after`'s day,
+        a page of `page_size` after `page_token`."""
+        after = (query.get("after") or [""])[0][:10]
+        token = (query.get("page_token") or [""])[0]
+        size = int((query.get("page_size") or ["100"])[0])
+        listed = [
+            a
+            for a in self.held["activities"]
+            if not after or str(a.get("date") or a.get("transaction_time") or "")[:10] >= after
+        ]
+        if token:
+            ids = [a["id"] for a in listed]
+            listed = listed[ids.index(token) + 1 :] if token in ids else []
+        return listed[:size]
+
+    def _positions(self) -> list[dict[str, Any]]:
+        held: dict[str, tuple[Decimal, Decimal]] = {}
+        for fill in self._fills():
+            qty, cost = held.get(fill["symbol"], (Decimal(0), Decimal(0)))
+            units = Decimal(fill["qty"]) * (1 if fill["side"] == "buy" else -1)
+            held[fill["symbol"]] = (qty + units, cost + units * Decimal(fill["price"]))
+        out = []
+        for symbol, (qty, cost) in sorted(held.items()):
+            if qty == 0:
+                continue
+            price = PRICES.get(symbol, PRICE)
+            average = (cost / qty).quantize(Decimal("0.0001"))
+            out.append(
+                {
+                    "asset_id": "00000000-0000-4000-8000-"
+                    f"{zlib.crc32(symbol.encode()) % 10**12:012d}",
+                    "symbol": symbol,
+                    "exchange": "NASDAQ",
+                    "asset_class": "us_equity",
+                    "asset_marginable": True,
+                    "qty": _text(qty),
+                    "qty_available": _text(qty),
+                    "avg_entry_price": _text(average),
+                    "side": "long" if qty > 0 else "short",
+                    "market_value": _text(qty * price),
+                    "cost_basis": _text(cost),
+                    "current_price": _text(price),
+                }
+            )
+        return out
+
+    def _cash(self) -> Decimal:
+        cash = Decimal(0)
+        for fill in self._fills():
+            sign = -1 if fill["side"] == "buy" else 1
+            cash += sign * Decimal(fill["qty"]) * Decimal(fill["price"])
+        for activity in self.held["activities"]:
+            if activity["activity_type"] != "FILL" and activity.get("net_amount") is not None:
+                cash += Decimal(activity["net_amount"])
+        return cash
 
     def _account(self) -> dict[str, Any]:
+        cash = self._cash()
+        long_value = sum((Decimal(p["market_value"]) for p in self._positions()), Decimal(0))
         return {
             "id": ACCOUNT_ID,
             "account_number": ACCOUNT_NUMBER,
             "status": "ACTIVE",
             "currency": "USD",
+            "cash": _text(cash),
+            "buying_power": _text(cash * 2),
+            "equity": _text(cash + long_value),
+            "long_market_value": _text(long_value),
+            "short_market_value": "0",
             "multiplier": "2",
             "trading_blocked": False,
             "account_blocked": False,

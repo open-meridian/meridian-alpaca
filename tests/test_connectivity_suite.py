@@ -1,4 +1,4 @@
-"""The connectivity suite (contract v22): every case Alpaca presents, from the
+"""The connectivity suite (contract v23): every case Alpaca presents, from the
 plugin's own trading code and the simulated brokerage.
 
 Each case is mapped to what Alpaca's Trading API answers for it, through the
@@ -8,18 +8,22 @@ quantity that works or fills), and run through this plugin's own Trader
 against the runner's recorder; only the sidecar is stood in for. SIMULATED
 ONLY: nothing reaches Alpaca.
 
-Seven cases are not presented, each with why (`NOT_PRESENTED`), as the
-suite lets a case marked `about` or `about_field` be. And one required case
-is not produced (`UNPRODUCED`): Alpaca states no fee on a placement that
-filled nothing, so the plugin has no charge to report; whether the suite
-marks the case `about` is the product owner's to rule.
+Ten cases are not presented, each with why (`NOT_PRESENTED`), as the
+suite lets a case marked `about` or `about_field` be: calendars, locates, a
+fill's place of execution, compliance waits, and from contract v23 a charge
+with no fill (`about: charges without a fill`), a charge re-reported on an
+accepted placement (`about: venue-originated fills`; Alpaca charges no fee
+on any order) and a value-date roll. Every other case passes, among them
+v23's fills of orders placed in Alpaca's own app, reported on no placement,
+and a later fill on the placement an accept created; and `reports-a-bust`,
+Alpaca busting a fill (its `trade_bust` event, the order's filled quantity
+falling).
 """
 
 from __future__ import annotations
 
 import asyncio
 
-import pytest
 from meridian.plugin.v1 import operations_pb2 as ops
 from meridian.suites import Recorder, names, run, suite
 
@@ -45,17 +49,21 @@ NOT_PRESENTED = {
         "it places what its ems released; whether releases wait for compliance changes "
         "nothing it sends"
     ),
-}
-
-#: Required cases the plugin does not produce, each with the exact reason
-#: Alpaca never presents it: left for the product owner to rule on.
-UNPRODUCED = {
     "reports-a-charge": (
         "Alpaca's account activities state fees (FEE: TAF, REG and the like) by day, naming "
         "no order, and its orders carry no fee: Alpaca states no charge on a placement that "
         "filled nothing"
     ),
+    "re-reports-a-charge-on-the-accepted-placement": (
+        "Alpaca charges no fee on any order, its own app's included: its fees are daily "
+        "account activity naming no order"
+    ),
+    "reports-a-value-date-roll": (
+        "Alpaca's trades settle on their settlement dates: it rolls no spot position at a daily cut"
+    ),
 }
+
+ACCEPTED = "PLC-01JAE0000000000000000ACPT"
 
 
 async def acknowledged(recorder: Recorder) -> None:
@@ -167,6 +175,41 @@ async def caught_up(recorder: Recorder) -> None:
     await rig.poll()
 
 
+async def originated(recorder: Recorder) -> None:
+    """An order of 5 placed in Alpaca's own app on the mapped account, after
+    the plugin watched it: its first fill, 2, reported on no placement."""
+    rig = Rig(recorder)
+    await rig.poll()
+    rig.brokerage.at_the_brokerage("AAPL", "5")
+    await rig.poll()
+
+
+async def accepted_then_filled(recorder: Recorder) -> None:
+    """The same order's first fill accepted by the ems: the book's placement
+    at filled naming the venue order, and the execution matched; its later
+    fill, 3, is reported on that placement."""
+    rig = Rig(recorder)
+    await rig.poll()
+    venue_order = rig.brokerage.at_the_brokerage("AAPL", "5")
+    await rig.poll()
+    (first,) = rig.executions
+    created = placement(
+        ACCEPTED, quantity="2", state=ops.PLACEMENT_STATE_FILLED, venue_order_id=venue_order
+    )
+    matched = ops.Execution(
+        execution_id=first.execution_id,
+        order_id=created.order_id,
+        placement_id=ACCEPTED,
+        venue_order_id=venue_order,
+        venue_execution_id=first.venue_execution_id,
+        state=ops.EXECUTION_STATE_MATCHED,
+    )
+    await rig.hear(created)
+    recorder.answer("ExecutionRecorded", lambda _: ops.ExecutionRecordedEvent(execution=matched))
+    await recorder.receive(execution_recorded=rig.trader.on_execution)
+    await rig.poll()
+
+
 PRODUCERS: dict[str, Producer] = {
     "acknowledges-a-placement-naming-it": acknowledged,
     "hears-no-placement-of-another-instance": another_instances,
@@ -187,28 +230,23 @@ PRODUCERS: dict[str, Producer] = {
     "catches-up-placements-after-a-loss": caught_up,
     "reads-the-instructions-in-force-on-start": started,
     "reports-a-symbol-it-cannot-resolve": renamed,
+    "reports-a-fill-on-no-placement": originated,
+    "reports-a-later-fill-on-the-accepted-placement": accepted_then_filled,
 }
 
 
-def test_every_case_is_mapped_said_not_presented_or_said_unproduced() -> None:
-    assert set(names("connectivity")) == set(PRODUCERS) | set(NOT_PRESENTED) | set(UNPRODUCED)
+def test_every_case_is_mapped_or_said_not_presented() -> None:
+    assert set(names("connectivity")) == set(PRODUCERS) | set(NOT_PRESENTED)
     assert not set(PRODUCERS) & set(NOT_PRESENTED)
     held = {case.name: case.about or case.about_field for case in suite("connectivity").cases}
     assert all(held[name] for name in NOT_PRESENTED), "a required case is never skipped"
-    assert not any(held[name] for name in UNPRODUCED), "an about case is not presented instead"
 
 
-def test_the_connectivity_suite_passes_but_for_the_cases_alpaca_never_presents() -> None:
-    report = run("connectivity", PRODUCERS, not_presented=NOT_PRESENTED, instance_id="alpaca")
-    assert set(report.failures) == set(UNPRODUCED), report.failures
-    assert len(report.passed_cases) == 19
-    assert sorted(report.not_presented) == sorted(NOT_PRESENTED)
-
-
-@pytest.mark.xfail(strict=True, reason="reports-a-charge: " + UNPRODUCED["reports-a-charge"])
-def test_every_required_case_passes() -> None:
+def test_every_case_of_the_connectivity_suite_passes_but_those_alpaca_never_presents() -> None:
     report = run("connectivity", PRODUCERS, not_presented=NOT_PRESENTED, instance_id="alpaca")
     assert report.passed, report.failures
+    assert report.not_presented == NOT_PRESENTED
+    assert set(report.passed_cases) == set(PRODUCERS)
 
 
 def test_a_plugin_sending_on_a_pause_fails_the_suite() -> None:
@@ -229,7 +267,7 @@ def test_a_plugin_sending_on_a_pause_fails_the_suite() -> None:
         not_presented=NOT_PRESENTED,
         instance_id="alpaca",
     )
-    assert set(report.failures) == {"sends-nothing-new-on-a-pause", *UNPRODUCED}
+    assert set(report.failures) == {"sends-nothing-new-on-a-pause"}
 
 
 def test_a_read_only_account_rejects_every_order_unsupported() -> None:

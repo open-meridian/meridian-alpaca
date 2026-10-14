@@ -1,7 +1,9 @@
 """The desk Alpaca's `make e2e` places its orders from (from 0.7.0), as
 SnapTrade's e2e has one: a stand-in holding `portfolio`, `oms` and `ems` on
-the Python SDK, and `reporting` to name an instrument by its identifiers
-(W3.1), run from the plugin's own image (e2e/plugin.yaml). Each page answers
+the Python SDK, `reporting` to name an instrument by its identifiers
+(W3.1), and from 0.8.0 `operations`, to record the account's opening balance
+from Alpaca's statement and reconcile the book against the next, run from
+the plugin's own image (e2e/plugin.yaml). Each page answers
 JSON so the harness's runner drives it (`page --level ... PATH`), acting for
 the person the session's `Meridian-Caller` header names. SIMULATED ONLY: it
 reaches the deployment through its sidecar and nothing else, and the orders
@@ -17,6 +19,11 @@ go to the plugin's simulated brokerage (src/alpaca/synthetic_broker.py).
   /orders?account=                        ListOrders, a line each
   /resolve?figi=&symbol=                  ResolveIdentifier: the record named by its identifiers
   /settles?instrument=&date=              ComputeDate: whether the date read gives a settlement date
+  /unmatched?account=                     ListOrders' executions on no placement (contract v23)
+  /accept?executions=a,b                  AcceptExecution to a new order (contract v23, ems)
+  /opening?account=&date=                 RecordOpeningBalance from the custodial positions (operations)
+  /compare?account=[&record=1]            the book's positions against the custodial ones; with
+                                          record, each difference recorded a break (operations)
 """
 
 import asyncio
@@ -196,7 +203,168 @@ class Desk:
         if path == "/orders":
             listed = await self.call("list_orders", account_id=one(query, "account"), page_size=500)
             return {"orders": [order_json(o) for o in listed.orders]}
+        if path == "/unmatched":
+            listed = await self.call(
+                "list_orders",
+                account_id=one(query, "account"),
+                execution_state=ops.EXECUTION_STATE_UNMATCHED,
+                page_size=500,
+            )
+            return {
+                "executions": [
+                    {
+                        "execution_id": e.execution_id,
+                        "venue_order_id": e.venue_order_id,
+                        "quantity": str(as_decimal(e.quantity)),
+                        "state": ops.ExecutionState.Name(e.state),
+                    }
+                    for e in listed.executions
+                    if not e.placement_id and e.state == ops.EXECUTION_STATE_UNMATCHED
+                ]
+            }
+        if path == "/accept":
+            done = await self.call(
+                "accept_execution",
+                execution_ids=one(query, "executions").split(","),
+                new_order=ops.NewOrderFromExecutions(note="Placed in the broker's own app"),
+                note="Ours: the account holder's order at the broker",
+                acting_for=caller,
+            )
+            return {"accepted": str(done).count("execution_id") or 1}
+        if path == "/opening":
+            return await self.opening(one(query, "account"), one(query, "date"), caller)
+        if path == "/compare":
+            return await self.compare(one(query, "account"), one(query, "record") == "1", caller)
         return {"page": "the desk"}
+
+    async def custodial(self, account):
+        """The account's custodial positions, by instrument and side."""
+        held, cursor = {}, ""
+        while True:
+            page = await self.call(
+                "list_custodial_positions", account_id=account, cursor=cursor, page_size=500
+            )
+            for p in page.positions:
+                if not p.removed:
+                    held[(p.instrument_id, p.side)] = p
+            if not page.next_cursor:
+                return held
+            cursor = page.next_cursor
+
+    async def booked(self, account):
+        """The book's positions, by instrument and side, and its watermark."""
+        held, cursor, watermark = {}, "", None
+        while True:
+            page = await self.call("list_positions", account_id=account, cursor=cursor)
+            for p in page.positions:
+                if not p.removed:
+                    held[(p.instrument_id, p.side)] = p
+            watermark = page.as_of
+            if not page.next_cursor:
+                return held, watermark
+            cursor = page.next_cursor
+
+    async def opening(self, account, day, caller):
+        """The opening balance as of `day`, from the custodial positions as
+        the custodian's latest statement stated them: a security with one
+        lot at its average cost, the cash with none."""
+        positions = []
+        for (instrument, side), p in sorted((await self.custodial(account)).items()):
+            quantity = as_decimal(p.quantity)
+            lots = []
+            if p.HasField("average_cost"):
+                cost = meridian.Money(
+                    as_decimal(p.average_cost.amount) * abs(quantity), p.average_cost.currency_code
+                )
+                lots = [
+                    meridian.OpeningLot(
+                        quantity=abs(quantity),
+                        terms=meridian.LotTerms(
+                            cost=cost, acquired_date=day, source=ops.LOT_SOURCE_OPENING_BALANCE
+                        ),
+                    )
+                ]
+            positions.append(
+                meridian.OpeningPosition(
+                    instrument_id=instrument,
+                    side=side,
+                    trade_date_quantity=quantity,
+                    settled_quantity=as_decimal(p.settle_date_quantity),
+                    lots=lots,
+                )
+            )
+        await self.call(
+            "record_opening_balance",
+            account_id=account,
+            as_of_date=day,
+            sources=[
+                meridian.OpeningSource(
+                    kind=ops.OPENING_SOURCE_KIND_CUSTODIAN,
+                    name="alpaca",
+                    as_of_date=day,
+                    basis=ops.POSITION_BASIS_TRADE_DATE,
+                )
+            ],
+            positions=positions,
+            reason="The e2e account's opening balance, from Alpaca's statement",
+            idempotency_key=f"opening:{account}:{day}",
+            acting_for=caller,
+        )
+        return {"opened": len(positions)}
+
+    async def compare(self, account, record, caller):
+        """Each position's trade-date and settled quantities, the book's
+        against the custodian's; with `record`, each difference a break."""
+        street = await self.custodial(account)
+        book, watermark = await self.booked(account)
+        differences = []
+        for key in sorted(set(street) | set(book)):
+            held, stated = book.get(key), street.get(key)
+            pairs = [
+                (
+                    "trade_date_quantity",
+                    as_decimal(held.trade_date_quantity) if held else Decimal(0),
+                    as_decimal(stated.quantity) if stated else Decimal(0),
+                ),
+                (
+                    "settled_quantity",
+                    as_decimal(held.settled_quantity) if held else Decimal(0),
+                    as_decimal(stated.settle_date_quantity) if stated else Decimal(0),
+                ),
+            ]
+            for field, ours, theirs in pairs:
+                if ours != theirs:
+                    differences.append((key, field, ours, theirs))
+        if record:
+            for (instrument, side), field, ours, theirs in differences:
+                await self.call(
+                    "record_break",
+                    account_id=account,
+                    position=meridian.PositionKey(instrument_id=instrument, side=side),
+                    category=(
+                        ops.BREAK_CATEGORY_TRADE_DATE_QUANTITY
+                        if field == "trade_date_quantity"
+                        else ops.BREAK_CATEGORY_SETTLED_QUANTITY
+                    ),
+                    differences=[
+                        meridian.BreakDifference(
+                            field=field,
+                            book=meridian.BreakValue(quantity=ours),
+                            street=meridian.BreakValue(quantity=theirs),
+                        )
+                    ],
+                    book_watermark=watermark,
+                    idempotency_key=f"break:{account}:{instrument}:{side}:{field}:{theirs}",
+                    acting_for=caller,
+                )
+        return {
+            "compared": len(set(street) | set(book)),
+            "street": len(street),
+            "breaks": [
+                {"instrument": i, "field": f, "book": str(o), "street": str(t)}
+                for (i, _), f, o, t in differences
+            ],
+        }
 
 
 def serve(desk):
@@ -227,7 +395,7 @@ def serve(desk):
 
 
 async def main():
-    roles = ["portfolio", "oms", "ems", "reporting"]
+    roles = ["portfolio", "oms", "ems", "reporting", "operations"]
     plugin = await meridian.connect(
         interface=Interface(
             PORT, "Desk", pages=[Page("/", "Desk", levels=["write", "admin"], roles=roles)]

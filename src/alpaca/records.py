@@ -149,3 +149,21 @@ class TradingEnabled:
 
     venue_account_code: str
     said: str = ""
+
+
+# ── Custody's, from 0.8.0 ────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class LinkAsked:
+    """A link asked for on Account links, in the kit's account map's fields
+    (`intent`: link, create or unlink): the external account, and the
+    account granted it is linked to, or a new account's name, custodian and
+    type for a deployment admin to create and link in one step."""
+
+    external_account_id: str
+    intent: str = "link"
+    account_id: str = ""
+    new_account_name: str = ""
+    new_account_custodian: str = ""
+    new_account_type: str = ""

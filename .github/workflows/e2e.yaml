@@ -9,7 +9,7 @@
 # ci-local and so of the pre-push hook. It is its own workflow rather than a
 # step of ci.yaml, which runs ci-remote without pulling images.
 #
-# Until open-meridian 0.26.0 is on PyPI and its base image on ghcr.io, this
+# Until open-meridian 0.27.0 is on PyPI and its base image on ghcr.io, this
 # job is red on the runner: the plugin's image is built on that base, which
 # a developer's machine builds from the sibling meridian-python checkout.
 name: e2e

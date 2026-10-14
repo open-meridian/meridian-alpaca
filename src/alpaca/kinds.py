@@ -1,13 +1,17 @@
-"""The kinds of raw record connectivity keeps, and their windows (contract
-v16; meridian-design spec/an-edge-plugins-older-records-move-to-the-
+"""The kinds of raw record the account side keeps, and their windows
+(contract v16; meridian-design spec/an-edge-plugins-older-records-move-to-the-
 archive), from 0.7.0.
 
-Connectivity keeps what Alpaca's Trading API said, as its bytes arrived,
-before anything is converted from it (decisions/028), in two kinds, each in
-units the plugin can find again:
+Custody (from 0.8.0) and connectivity keep what Alpaca's Trading API said,
+as its bytes arrived, before anything is converted from it (decisions/028),
+in three kinds, each in units the plugin can find again:
 
-- `responses` ("Raw responses"): each read of the account and its orders,
-  in a unit per UTC day (`responses/2026-10-13/`); 30 days by default.
+- `responses` ("Raw responses"): each read of the account, its positions and
+  its orders, in a unit per UTC day (`responses/2026-10-13/`); 30 days by
+  default.
+- `activity` ("Reported activity", from 0.8.0, SnapTrade's kind): each page
+  of the account's activities, a reported activity's raw record, in a unit
+  per month (`activity/2026-10/`); seven years by default, as SnapTrade's.
 - `trading` ("Trading", contract v22): each exchange with the Trading API
   that places, replaces or cancels an order, every trade update heard, every
   rejection this plugin made with nothing sent, and each account trading was
@@ -46,13 +50,14 @@ from meridian.v1 import sidecar_pb2
 
 log = logging.getLogger("alpaca.kinds")
 
-RESPONSES, TRADING = "responses", "trading"
+RESPONSES, ACTIVITY, TRADING = "responses", "activity", "trading"
 #: How long each kind stays in storage by default, in days.
-DEFAULT_WINDOWS = {RESPONSES: 30, TRADING: 2555}
+DEFAULT_WINDOWS = {RESPONSES: 30, ACTIVITY: 2555, TRADING: 2555}
 #: Which kinds are kept in a unit per month; the rest per day.
-MONTHLY = frozenset({TRADING})
+MONTHLY = frozenset({ACTIVITY, TRADING})
 KINDS = (
     RecordKind(RESPONSES, "Raw responses", window_days=DEFAULT_WINDOWS[RESPONSES]),
+    RecordKind(ACTIVITY, "Reported activity", window_days=DEFAULT_WINDOWS[ACTIVITY]),
     RecordKind(TRADING, "Trading", window_days=DEFAULT_WINDOWS[TRADING]),
 )
 #: What is done past a window: the SDK's three choices.
