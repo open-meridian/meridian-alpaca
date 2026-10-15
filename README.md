@@ -20,7 +20,7 @@ It is the first half of the retail pair, beside
 [meridian-tradier](https://github.com/open-meridian/plugin-tradier): both
 pass the same suites of the SDK, unchanged.
 
-**Status:** 0.8.1, on open-meridian 0.27.0 (contract 23), proven locally
+**Status:** 0.9.0, on open-meridian 0.27.0 (contract 23), proven locally
 against core v23's runtime and plugin harness, built locally. Not released.
 
 ## What it serves
@@ -141,7 +141,7 @@ the key decides which account connectivity trades.
 3. Choose **Environment**: **Sandbox** is Alpaca's paper trading API
    (paper-api.alpaca.markets), simulated money; **Live** is its live
    Trading API (api.alpaca.markets). It must match the key. It is Sandbox
-   until a person chooses Live (from 0.8.1): neither an upgrade nor an
+   until a person chooses Live (from 0.9.0): neither an upgrade nor an
    Environment never saved turns the plugin Live.
 4. Enter the **API key ID** and the **API secret key**. Both are secret
    settings: once saved they are never shown again, logged, put on a page or
