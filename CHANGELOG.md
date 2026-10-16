@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0 (unreleased)
+
+0.8.1 was never released: its fix ships as 0.9.0 (the v24 plan's O5), on
+the v23 pins (open-meridian 0.27.0, core 50d6f0a's runtime and harness),
+since nothing here needs contract 24 (the product owner, 2026-10-14). The
+daily dataset's calendar waits for v25: open-meridian 0.28.0 is the first SDK
+whose DatasetDeclaration carries `calendar_id`.
+
+- **Live is a person's choice.** `environment` defaults to `sandbox`,
+  Alpaca's paper trading API, not `live`: an upgrade, or an Environment
+  never saved, no longer turns the plugin Live. Over a deployment that
+  never saved one, 0.8.0 came up on Live, where Alpaca's live Trading API
+  refuses a paper account's key (40110000). Its description says Live is
+  chosen by a person (the product owner, 2026-10-14).
+- Nothing else changes. Tests: an unset environment is the sandbox, and
+  Live only once chosen.
+
 ## 0.8.0 (unreleased)
 
 - On open-meridian 0.27.0 (contract 23): the pins moved as the SDK's

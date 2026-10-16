@@ -13,11 +13,15 @@ what it is.
 From 0.8.0 the plugin holds three roles (data, custody, connectivity), and
 every setting names the roles it serves:
 
-- `environment` first (`meridian.environment`): `live`, Alpaca's live
-  Trading API (api.alpaca.markets), or `sandbox`, Alpaca's paper trading API
-  (paper-api.alpaca.markets), the same API with simulated money. It decides
-  which account custody reads and connectivity trades. Market data is one service whichever
-  it is, and either account's key reads it.
+- `environment` first, a required choice, the common setting's name, label
+  and values: `live`, Alpaca's live Trading API (api.alpaca.markets), or
+  `sandbox`, Alpaca's paper trading API (paper-api.alpaca.markets), the
+  same API with simulated money. It decides which account custody reads
+  and connectivity trades. Market data is one service whichever it is, and
+  either account's key reads it. From 0.8.1 it defaults to `sandbox`, not
+  the common setting's `live`, so Live is only ever a person's choice (the
+  product owner, 2026-10-14): an upgrade or an unset value never turns the
+  plugin Live.
 - the key's two parts, for whichever environment is chosen: a live
   account's key on `live`, a paper account's on `sandbox`. One key, as
   before, so a value saved under 0.6.x carries over unchanged.
@@ -67,11 +71,17 @@ class Declared:
     """The settings as declared, in the roles' order: one typed class, the
     SDK's form, which `connect` and the declaration register."""
 
-    environment: str = meridian.environment(
+    # The common setting `environment` (meridian.environment), its name,
+    # label and values, but Sandbox by default: Live is a person's choice.
+    environment: str = meridian.setting(
+        "Environment",
+        required=True,
+        default=SANDBOX,
+        choices=(meridian.Choice(LIVE, "Live"), meridian.Choice(SANDBOX, "Sandbox")),
         description=(
             "Live: Alpaca's live Trading API, with a live account's key. Sandbox: Alpaca's "
             "paper trading API, simulated money, with a paper account's key. Market data "
-            "reads the same either way."
+            "reads the same either way. Sandbox until a person chooses Live."
         ),
         roles=EVERY_ROLE,
     )
@@ -148,7 +158,7 @@ class Config:
     key_id_set: bool = False
     secret_key_set: bool = False
     sample_data: bool = False
-    environment: str = LIVE
+    environment: str = SANDBOX
     poll_seconds: int = DEFAULT_POLL_SECONDS
     stale_after: timedelta = timedelta(hours=DEFAULT_STALE_AFTER_HOURS)
 
@@ -164,7 +174,9 @@ class Config:
 
 
 def config_from(values: Mapping[str, object]) -> Config:
-    """The settings as delivered, typed."""
+    """The settings as delivered, typed: Live only where it is chosen, the
+    sandbox otherwise, the declared default the SDK fills in while it is
+    unset."""
     key_id, secret_key = str(values.get(KEY_ID) or ""), str(values.get(SECRET_KEY) or "")
     poll, stale = values.get(POLL_SECONDS), values.get(STALE_AFTER_HOURS)
     return Config(
@@ -172,7 +184,7 @@ def config_from(values: Mapping[str, object]) -> Config:
         key_id_set=bool(key_id),
         secret_key_set=bool(secret_key),
         sample_data=values.get(SAMPLE_DATA) is True,
-        environment=SANDBOX if values.get(ENVIRONMENT) == SANDBOX else LIVE,
+        environment=LIVE if values.get(ENVIRONMENT) == LIVE else SANDBOX,
         poll_seconds=(
             max(poll, LEAST_POLL_SECONDS)
             if isinstance(poll, int) and not isinstance(poll, bool)
