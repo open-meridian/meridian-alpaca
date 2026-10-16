@@ -168,7 +168,7 @@ def answered(path, rows="prices"):
 
 def run():
     started = time.time()
-    compose("down", "-v", "--remove-orphans", check=False)
+    compose("--profile", "runner", "down", "-v", "--remove-orphans", check=False)
     compose("up", "-d")
     for instance in ("alpaca", "reader", "desk"):
         runner("ready", "--instance", instance)
@@ -391,7 +391,7 @@ def main():
         return 1
     finally:
         compose("logs", "--no-color", check=False)
-        compose("down", "-v", "--remove-orphans", check=False)
+        compose("--profile", "runner", "down", "-v", "--remove-orphans", check=False)
     return 0
 
 

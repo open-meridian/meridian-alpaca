@@ -305,7 +305,8 @@ def producers(tmp: Path) -> dict[str, Producer]:
 def test_the_data_suite_passes_unchanged(tmp_path: Path) -> None:
     report = run("data", producers(tmp_path), not_presented=NOT_PRESENTED)
     assert report.passed, report.failures
-    assert len(report.passed_cases) == 20
+    # Contract v24: and the two cases every suite holds, which the SDK answers.
+    assert len(report.passed_cases) == 22
     assert sorted(report.not_presented) == sorted(NOT_PRESENTED)
 
 

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.10.0 (unreleased)
+
+On open-meridian 0.29.0, contract 25 (sdk-contract/plugins-are-shared-and-
+documented-contract), the v25 build's step 8; past contract 24, which this
+plugin skipped on the v23 pins.
+
+- **The whole declaration** (`declaration.py`): its settings, its interface
+  -- Connection, Datasets, Account links, Statements, History, Trading and
+  Raw records, with the tools their routes make -- on a port fixed at 8000,
+  that it reads external accounts, its catalogue and storage, and its
+  documentation. `__main__` connects with the declaration alone; so do the
+  e2e's desk and reader. The parts the pages import moved to `declared.py`.
+- **The daily dataset names its calendar** (contract 24's `calendar_id`,
+  the v24 plan's O10): the platform's US equity venues calendar,
+  `CAL-01M4VF0F4XGP3RATCCSKDPZSBP`, so the lake flags a close dated on a
+  closed day.
+- **Its documentation** (`docs/`): the drafts revised for all three roles --
+  the account at Alpaca, its orders, Account links, Statements, History,
+  Trading and Raw records added; the data and custody roles' pages linked;
+  "a later version" for the account removed.
+- **The suites**: custody's v24 case, a holding named by its symbol alone,
+  recorded unresolved; connectivity's give-up case not presented (no trade
+  is given up at Alpaca); the two cases every suite holds answered by the SDK.
+- **The pins**: open-meridian 0.29.0 and plugin-python:0.29.0, core v25's
+  runtime and harness, and `meridian` 0.1.46 in `check.yaml`, each a marked
+  placeholder until published.
+- **`make e2e`** takes the harness down with `--profile runner`.
+
 ## 0.9.0 (unreleased)
 
 0.8.1 was never released: its fix ships as 0.9.0 (the v24 plan's O5), on

@@ -397,9 +397,10 @@ def serve(desk):
 async def main():
     roles = ["portfolio", "oms", "ems", "reporting", "operations"]
     plugin = await meridian.connect(
-        interface=Interface(
+        # Contract v25: what the stand-in registers is its declaration.
+        declaration=meridian.Declaration(interface=Interface(
             PORT, "Desk", pages=[Page("/", "Desk", levels=["write", "admin"], roles=roles)]
-        )
+        ))
     )
     print(f"DESK registered as {plugin.identity.instance_id}", flush=True)
     threading.Thread(target=serve, args=(Desk(plugin),), daemon=True).start()

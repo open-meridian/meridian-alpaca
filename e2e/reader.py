@@ -182,8 +182,9 @@ def serve(served):
 
 async def main():
     plugin = await meridian.connect(
-        interface=Interface(PORT, "Reader", pages=[
-            Page("/", "Prices", levels=["read"], roles=["reporting", "signal"])]),
+        # Contract v25: what the stand-in registers is its declaration.
+        declaration=meridian.Declaration(interface=Interface(PORT, "Reader", pages=[
+            Page("/", "Prices", levels=["read"], roles=["reporting", "signal"])]))
     )
     print("reader registered as", plugin.identity.instance_id, flush=True)
     threading.Thread(target=serve, args=(Reader(plugin),), daemon=True).start()

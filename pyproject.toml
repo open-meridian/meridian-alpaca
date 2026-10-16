@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alpaca"
-version = "0.9.0"
+version = "0.10.0"
 description = "Alpaca's US equity and ETF market data in an Open Meridian deployment's lake, and orders placed at Alpaca"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"

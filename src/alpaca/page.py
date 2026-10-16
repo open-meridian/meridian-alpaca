@@ -28,7 +28,7 @@ from meridian.roles import data
 
 from .convert import NEW_YORK
 from .custody import Syncer
-from .declaration import CATALOGUE
+from .declared import CATALOGUE
 from .kinds import Store
 from .lake import DAILY, LIVE, PRICE, QUOTE, TRADES, Lake
 from .records import (

@@ -36,7 +36,7 @@ import meridian
 import pytest
 from meridian.operations import as_decimal
 from meridian.plugin.v1 import operations_pb2 as ops
-from meridian.suites import Recorder, run, suite
+from meridian.suites import ANSWERED_BY_SDK, Recorder, run, suite
 from meridian.testing import PageClient
 
 from alpaca import custody, page
@@ -248,6 +248,17 @@ def ambiguous(recorder: Recorder) -> Awaitable[None]:
     return reading(positions=[position("ABC", "3")])(recorder)
 
 
+def thin(recorder: Recorder) -> Awaitable[None]:
+    """A holding Alpaca names by its symbol alone, stating no description of
+    the security, which the platform does not know (contract v24): recorded
+    unresolved, naming what it was given, never guessed."""
+    recorder.answer(
+        "ResolveIdentifier",
+        lambda _: ops.ResolveIdentifierResult(found=False, miss_reason=ops.MISS_REASON_NOT_FOUND),
+    )
+    return reading(positions=[position("ZZTOP", "5")])(recorder)
+
+
 def paged(**caller: Any) -> Callable[[Recorder], PageClient]:
     def client(recorder: Recorder) -> PageClient:
         syncer = Syncer(
@@ -340,6 +351,7 @@ PRODUCERS: dict[str, Producer] = {
     "link-a-new-account": link_a_new_account,
     # The account's cash 0: the one row is the security's.
     "a-security-holding": reading(account(cash="0"), HELD),
+    "records-a-thinly-described-holding-unresolved": thin,
     "institution-not-stated": reading(account(), HELD),
     "settled-quantity-not-stated": reading(account(), HELD),
     "pending-by-value-date": PENDING,
@@ -375,7 +387,8 @@ PRODUCERS: dict[str, Producer] = {
 
 def test_every_case_is_mapped_or_said_not_presented() -> None:
     every = {case.name for case in suite("custody").cases}
-    assert every == set(PRODUCERS) | set(NOT_PRESENTED)
+    # Contract v24: the two cases every suite holds, which the SDK answers.
+    assert every == set(PRODUCERS) | set(NOT_PRESENTED) | set(ANSWERED_BY_SDK)
     assert not set(PRODUCERS) & set(NOT_PRESENTED)
 
 
@@ -383,7 +396,7 @@ def test_every_case_of_the_custody_suite_passes_but_those_alpaca_never_presents(
     report = run("custody", PRODUCERS, not_presented=NOT_PRESENTED, instance_id="alpaca")
     assert report.passed, report.failures
     assert report.not_presented == NOT_PRESENTED
-    assert set(report.passed_cases) == set(PRODUCERS)
+    assert set(report.passed_cases) == set(PRODUCERS) | set(ANSWERED_BY_SDK)
 
 
 def recorded(producer: Producer) -> Recorder:
