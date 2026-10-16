@@ -180,11 +180,22 @@ def serve(served):
     http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
 
 
+#: What the stand-in registers, its whole declaration (contract v25): the
+#: e2e prints it with meridian-declaration and the harness holds the
+#: stand-in's registration to it.
+DECLARATION = meridian.Declaration(
+    interface=Interface(
+        PORT,
+        "Reader",
+        pages=[Page("/", "Prices", levels=["read"], roles=["reporting", "signal"])],
+    )
+)
+
+
 async def main():
     plugin = await meridian.connect(
         # Contract v25: what the stand-in registers is its declaration.
-        declaration=meridian.Declaration(interface=Interface(PORT, "Reader", pages=[
-            Page("/", "Prices", levels=["read"], roles=["reporting", "signal"])]))
+        declaration=DECLARATION
     )
     print("reader registered as", plugin.identity.instance_id, flush=True)
     threading.Thread(target=serve, args=(Reader(plugin),), daemon=True).start()
