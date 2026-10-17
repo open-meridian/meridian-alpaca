@@ -312,7 +312,7 @@ def run():
     datasets = call("alpaca__read_datasets", {}, "unchanged")["data"]
     by_key = {d["key"]: d for d in datasets["served"]}
     must(by_key["daily"]["recorded"] >= 4
-         and by_key["live"]["recorded"] >= 1 and datasets["listings"] == 4
+         and by_key["live"]["recorded"] >= 1 and datasets["listings"] == 3
          and datasets["reads_instruments"] is True and datasets["streamed"] >= 2
          and (RECORDED or by_key["trades"]["recorded"] >= 3),
          f"step 7, read_datasets: {datasets}")
@@ -329,7 +329,10 @@ def run():
                    "print(json.dumps(json.load(open(edge.storage_dir() / 'products.json'))))").stdout
     products = json.loads(kept)
     must(products.get(spy) == "SPY" and products.get(brk) == "BRK.B" and products.get(other) == "TQQQ"
-         and sorted(products.values()) == ["BRK.B", "SPY", "TQQQ", "TQQQ"],
+         # Contract v24: TQQQ's record is the platform's INS- record, by its
+         # FIGI, so Alpaca's symbol joined to it names that record, never a
+         # second one (W3.1); before v24 a second record mapped TQQQ again.
+         and sorted(products.values()) == ["BRK.B", "SPY", "TQQQ"],
          f"step 8, the product map kept: {kept}")
     runner("ready", "--instance", "alpaca")
 

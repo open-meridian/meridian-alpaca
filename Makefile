@@ -128,6 +128,12 @@ image:
 # Each stand-in's the same, its directory mounted as it runs.
 DECLARATION_REF := $(shell sed -n 's/^declaration *= *"\(.*\)"/\1/p' pyproject.toml)
 DECLARE := docker run --rm --network none --entrypoint meridian-declaration
+# E2E_MINTS: the FIGIs the e2e's reader states of SPY, BRK.B and TQQQ
+# (e2e/reader.py), each invented for the e2e. The harness's stand-in platform
+# is told it holds them, so each listing is the platform's INS- record, which
+# the lake wants; a provisional local record it never wants (contract v24,
+# W10.6).
+E2E_MINTS := BBG00E2ESPY1,BBG00E2EBRKB,BBG00E2ETQQQ
 # The plugin, in synthetic mode and with no key, on the plugin harness
 # published with the runtime it pins (the harness's README, in
 # HARNESS_IMAGE), beside the e2e's reader: e2e/run.py says each step. Its own
@@ -151,6 +157,7 @@ e2e: image
 		python /harness/harness.py compose <e2e/plugins.json >.e2e/harness/plugins.yaml 2>>.e2e/components.log \
 		|| { echo "e2e FAILED: the harness did not write its plugins from e2e/plugins.json" >&2; exit 1; }
 	@MERIDIAN_RUNTIME_IMAGE=$(RUNTIME_IMAGE) ALPACA_E2E="$(CURDIR)/e2e" RECORDED="$(RECORDED)" \
+		HARNESS_PLATFORM_MINTS=$(E2E_MINTS) \
 		python3 e2e/run.py $(if $(E2E_RECORDED),--recorded,); status=$$?; \
 		rm -rf .e2e/harness; exit $$status
 

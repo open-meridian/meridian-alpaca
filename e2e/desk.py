@@ -267,7 +267,10 @@ class Desk:
     async def opening(self, account, day, caller):
         """The opening balance as of `day`, from the custodial positions as
         the custodian's latest statement stated them: a security with one
-        lot at its average cost, the cash with none."""
+        lot at its average cost; and from contract v24 the cash too, one lot
+        at its own amount (W9: until the account has a base currency, every
+        currency opens lots, each with its cost and acquisition date, and
+        the e2e's account has none set)."""
         positions = []
         for (instrument, side), p in sorted((await self.custodial(account)).items()):
             quantity = as_decimal(p.quantity)
@@ -276,6 +279,13 @@ class Desk:
                 cost = meridian.Money(
                     as_decimal(p.average_cost.amount) * abs(quantity), p.average_cost.currency_code
                 )
+            elif p.HasField("market_value"):
+                cost = meridian.Money(
+                    abs(as_decimal(p.market_value.amount)), p.market_value.currency_code
+                )
+            else:
+                cost = None
+            if cost is not None:
                 lots = [
                     meridian.OpeningLot(
                         quantity=abs(quantity),
