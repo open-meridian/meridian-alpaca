@@ -1,5 +1,5 @@
 [
-  {"instance": "alpaca", "image": "alpaca:local", "roles": ["data", "custody", "connectivity"]},
-  {"instance": "reader", "image": "alpaca:local", "roles": ["custody", "reporting", "signal"]},
-  {"instance": "desk", "image": "alpaca:local", "roles": ["portfolio", "oms", "ems", "reporting", "operations"]}
+  {"instance": "alpaca", "image": "alpaca:local", "roles": ["data", "custody", "connectivity"], "declaration": "declaration.json"},
+  {"instance": "reader", "image": "alpaca:local", "roles": ["custody", "reporting", "signal"], "declaration": "reader.json"},
+  {"instance": "desk", "image": "alpaca:local", "roles": ["portfolio", "oms", "ems", "reporting", "operations"], "declaration": "desk.json"}
 ]

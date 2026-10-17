@@ -1,7 +1,7 @@
 # Its pages
 
-Both pages are the data role's, the same on every data plugin, under Manage
-for an admin of the plugin. Neither shows a price: prices are read by the
+Connection and Datasets are the data role's, the same on every data plugin,
+under Manage for an admin of the plugin's data role. Neither shows a price: prices are read by the
 plugins entitled to them. Each page is also a tool an agent can call through
 your deployment's MCP connection, answering exactly what the page shows,
 under the same names on every data plugin.
@@ -35,3 +35,33 @@ under the same names on every data plugin.
   record.
 - **Kept current** (Alpaca's): how many listings it knows and streams, and
   how many subjects were declined today, each once for the date.
+
+## Account links
+
+Under Manage, for an admin of the custody role (`read_account_links`). The
+Alpaca account the API key reaches, by its number, beside the deployment's
+accounts granted to this plugin, and the links between them. Link, create a
+new account (a deployment admin), or unlink.
+
+## Statements and History
+
+Under Open and View, for people who may read the linked account
+(`read_statements`, `read_account_activities`). **Statements**: its
+custodian, the day its last statement is as of, and its state at Alpaca.
+**History**: its activity as Alpaca reported it, the latest first.
+
+## Trading
+
+Under Manage, for an admin of the connectivity role (`read_trading`). The
+environment, Paper or Live, said plainly; each account the API key
+reaches by its venue account code, read-only or with trading enabled, the
+order types its catalogue offers and whether the execution plugin mapped
+it; how many orders are working, held back by a pause or a stop, or of
+unknown outcome. **Enable trading** on a read-only account. No account's
+data.
+
+## Raw records
+
+Under Open and View. What Alpaca answered, kept as raw records, followed from
+a fact's or a row's reference, for a person who may read the account; under
+Open, **Restore** brings an archived one back for seven days.

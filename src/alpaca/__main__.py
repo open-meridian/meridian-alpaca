@@ -39,7 +39,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import signal
 import tempfile
 from collections.abc import Callable, Coroutine
@@ -52,13 +51,13 @@ from meridian import edge
 
 from .broker import Broker, base_for, stream_for
 from .custody import Syncer
-from .declaration import DECLARATION
+from .declaration import DECLARATION, PORT
 from .kinds import Store, tend, windows_from
 from .kinds import root as kinds_root
 from .lake import Lake, Products
-from .page import TITLE, State, figures, pages, serve
+from .page import State, figures, serve
 from .raw import RawStore, storage_root
-from .settings import DECLARED, Config, config_from
+from .settings import Config, config_from
 from .source import AlpacaSource
 from .stream import AlpacaFeed, Feed, Streamer, symbol_limit
 from .synthetic import SyntheticFeed, SyntheticTransport, exchange
@@ -330,18 +329,14 @@ async def run() -> None:
     for stop in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(stop, stopped.set)
 
-    port = int(os.environ.get("ALPACA_PAGE_PORT", "8000"))
+    port = PORT
     granted = edge.storage_dir()
     store = RawStore(storage_root(Path(tempfile.mkdtemp(prefix="alpaca-raw-"))))
     kinds = Store(kinds_root())
-    async with await meridian.connect(
-        interface=meridian.Interface(port=port, title=TITLE, pages=pages),
-        settings=DECLARED,
-        declaration=DECLARATION,
-        # Custody names the account by Alpaca's number, which an admin of the
-        # plugin links to one of the deployment's accounts (W6.4).
-        reads_external_accounts=True,
-    ) as plugin:
+    # The version's whole declaration (declaration.py): its settings, its
+    # pages with the levels each serves and their tools, and its documentation.
+    # A version registers exactly what it was uploaded with (contract v25).
+    async with await meridian.connect(declaration=DECLARATION) as plugin:
         roles = set(plugin.identity.roles)
         log.info(
             "registered as %s, roles %s",

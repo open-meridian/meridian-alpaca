@@ -39,12 +39,28 @@ from meridian.plugin.v1 import operations_pb2 as ops
 PORT = 8000
 LOOP = asyncio.new_event_loop()
 ASKED = {
-    "spy": [ops.Identifier(scheme="symbol", value="SPY", source="alpaca")],
-    "brk": [ops.Identifier(scheme="symbol", value="BRK.B", source="alpaca")],
+    "spy": [
+        ops.Identifier(scheme="figi", value="BBG00E2ESPY1"),
+        ops.Identifier(scheme="symbol", value="SPY", source="alpaca"),
+    ],
+    "brk": [
+        ops.Identifier(scheme="figi", value="BBG00E2EBRKB"),
+        ops.Identifier(scheme="symbol", value="BRK.B", source="alpaca"),
+    ],
     "other": [
         ops.Identifier(scheme="cusip", value="74347X831"),
+        ops.Identifier(scheme="figi", value="BBG00E2ETQQQ"),
         ops.Identifier(scheme="symbol", value="TQQQ", source="e2e-custodian"),
     ],
+}
+#: What a custodian's statement states beside each identifier (contract v24,
+#: W3.7): a description and a currency, the minimum a record is minted from.
+#: Each listing also carries its FIGI, invented for the e2e (the Makefile's
+#: E2E_MINTS), so it is the platform's INS- record, which the lake wants.
+STATED = {
+    "spy": "SPDR S&P 500 ETF Trust",
+    "brk": "Berkshire Hathaway Inc. Class B",
+    "other": "ProShares UltraPro QQQ",
 }
 
 
@@ -74,7 +90,9 @@ class Reader:
     async def resolve(self):
         for name, identifiers in ASKED.items():
             if name not in self.ids:
-                found = await self.plugin.resolve_identifier(identifiers=identifiers)
+                found = await self.plugin.resolve_identifier(
+                    identifiers=identifiers, stated_description=STATED[name], stated_currency="USD"
+                )
                 if not found.instrument_id:
                     raise RuntimeError(f"{name} did not resolve: {found}")
                 self.ids[name] = found.instrument_id
@@ -180,10 +198,22 @@ def serve(served):
     http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
 
 
+#: What the stand-in registers, its whole declaration (contract v25): the
+#: e2e prints it with meridian-declaration and the harness holds the
+#: stand-in's registration to it.
+DECLARATION = meridian.Declaration(
+    interface=Interface(
+        PORT,
+        "Reader",
+        pages=[Page("/", "Prices", levels=["read"], roles=["reporting", "signal"])],
+    )
+)
+
+
 async def main():
     plugin = await meridian.connect(
-        interface=Interface(PORT, "Reader", pages=[
-            Page("/", "Prices", levels=["read"], roles=["reporting", "signal"])]),
+        # Contract v25: what the stand-in registers is its declaration.
+        declaration=DECLARATION
     )
     print("reader registered as", plugin.identity.instance_id, flush=True)
     threading.Thread(target=serve, args=(Reader(plugin),), daemon=True).start()

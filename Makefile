@@ -37,8 +37,9 @@ CLI_CONTEXT := $(if $(MERIDIAN_BIN),--build-context cli=$(MERIDIAN_BIN),)
 # 0.1.303.
 # Moved together by a deliberate commit, and with the SDK when a contract version
 # changes. e2e-latest.yaml tries the runtime and harness tagged latest weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:50d6f0a@sha256:31752d45e262b4e87978e486f5e3cdd201fe14970bf1e681bfb9241731d0a053
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:50d6f0a@sha256:00c4818b8c67218ecbe237f97e97b78cad3801477520ebbae80fe29332de4115
+# Core abf028f (merged as fc3f0d1), contract v25, as published with chart 0.1.306.
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:abf028f@sha256:67c765c3c8234d942fa18b95a2d18cbc96358853ed27a730a2f057a15625d3c9
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:abf028f@sha256:bdc4325691084e2cbc5e4ba4c01bb9e3ea45be5264fb081682b1c48f1864b1e8
 # A developer's own recording of Alpaca's responses, for `make e2e-recorded`:
 # a directory holding exchange.json, never committed.
 RECORDED    ?=
@@ -117,10 +118,22 @@ image:
 	@docker run --rm --entrypoint python $(IMAGE) -c \
 		"import meridian, alpaca.__main__, alpaca.page; from alpaca.synthetic import exchange; assert exchange()['bars']" \
 		|| { echo "image FAILED: it does not import the SDK and itself, with its synthetic exchange" >&2; exit 1; }
-	@[ -z "$$(docker run --rm --entrypoint sh $(IMAGE) -c 'ls -A /plugin')" ] \
-		|| { echo "image FAILED: /plugin holds files; only the installed package belongs" >&2; exit 1; }
+	@[ "$$(docker run --rm --entrypoint sh $(IMAGE) -c 'ls -A /plugin')" = "docs" ] \
+		|| { echo "image FAILED: /plugin holds files beyond docs/; only the installed package and its documentation belong" >&2; exit 1; }
 	@echo "image OK: $(IMAGE) on $(BASE), $$(docker image inspect -f '{{.Size}}' $(IMAGE) | awk '{printf "%.0f MB", $$1/1e6}')"
 
+# The declaration [tool.meridian] names (contract v25): `make e2e` prints it
+# from the image under test, as `meridian plugin upload` reads it, and the
+# harness holds the plugin's registration to it (its README, `declaration`).
+# Each stand-in's the same, its directory mounted as it runs.
+DECLARATION_REF := $(shell sed -n 's/^declaration *= *"\(.*\)"/\1/p' pyproject.toml)
+DECLARE := docker run --rm --network none --entrypoint meridian-declaration
+# E2E_MINTS: the FIGIs the e2e's reader states of SPY, BRK.B and TQQQ
+# (e2e/reader.py), each invented for the e2e. The harness's stand-in platform
+# is told it holds them, so each listing is the platform's INS- record, which
+# the lake wants; a provisional local record it never wants (contract v24,
+# W10.6).
+E2E_MINTS := BBG00E2ESPY1,BBG00E2EBRKB,BBG00E2ETQQQ
 # The plugin, in synthetic mode and with no key, on the plugin harness
 # published with the runtime it pins (the harness's README, in
 # HARNESS_IMAGE), beside the e2e's reader: e2e/run.py says each step. Its own
@@ -134,10 +147,17 @@ e2e: image
 		&& docker cp "$$id:/harness" .e2e/harness >/dev/null \
 		&& docker rm "$$id" >/dev/null \
 		|| { echo "e2e FAILED: no plugin harness at /harness in $(HARNESS_IMAGE)" >&2; exit 1; }
+	@$(DECLARE) $(IMAGE) $(DECLARATION_REF) >.e2e/harness/declaration.json 2>>.e2e/components.log \
+		|| { rm -rf .e2e/harness; echo "e2e FAILED: meridian-declaration did not print $(DECLARATION_REF) (declaration.json)" >&2; exit 1; }
+	@$(DECLARE) -v "$(CURDIR)/e2e":/e2e:ro -e PYTHONPATH=/e2e $(IMAGE) reader:DECLARATION >.e2e/harness/reader.json 2>>.e2e/components.log \
+		|| { rm -rf .e2e/harness; echo "e2e FAILED: meridian-declaration did not print reader:DECLARATION (reader.json)" >&2; exit 1; }
+	@$(DECLARE) -v "$(CURDIR)/e2e":/e2e:ro -e PYTHONPATH=/e2e $(IMAGE) desk:DECLARATION >.e2e/harness/desk.json 2>>.e2e/components.log \
+		|| { rm -rf .e2e/harness; echo "e2e FAILED: meridian-declaration did not print desk:DECLARATION (desk.json)" >&2; exit 1; }
 	@docker run --rm -i -v "$(CURDIR)/.e2e/harness":/harness:ro python:3.12-alpine \
 		python /harness/harness.py compose <e2e/plugins.json >.e2e/harness/plugins.yaml 2>>.e2e/components.log \
 		|| { echo "e2e FAILED: the harness did not write its plugins from e2e/plugins.json" >&2; exit 1; }
 	@MERIDIAN_RUNTIME_IMAGE=$(RUNTIME_IMAGE) ALPACA_E2E="$(CURDIR)/e2e" RECORDED="$(RECORDED)" \
+		HARNESS_PLATFORM_MINTS=$(E2E_MINTS) \
 		python3 e2e/run.py $(if $(E2E_RECORDED),--recorded,); status=$$?; \
 		rm -rf .e2e/harness; exit $$status
 

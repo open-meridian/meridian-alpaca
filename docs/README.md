@@ -1,9 +1,20 @@
-# Alpaca for Open Meridian
+# The Alpaca plugin: its documentation
 
-A draft of the plugin's documentation, for open-meridian.dev.
+What this plugin's vendor says about it, for the people who set it up and use
+it. Each version ships these sections with its upload, named by digest in its
+declaration, and a deployment shows them on the plugin's **Documentation**
+tab, beside a Reference drawn from what the version declares.
 
-- [Overview](overview.md): what the plugin puts into a deployment's lake, and what it leaves out.
-- [Setting it up](setup.md): the key, the settings, licensing and entitling its datasets.
-- [Its pages](pages.md): Connection and Datasets, and their tools.
-- [Alpaca's terms](terms.md): a summary, not legal advice.
-- [Troubleshooting](troubleshooting.md): what each state on its pages means, and what to do.
+| Section | For |
+|---|---|
+| [Overview](overview.md) | What it does, what it records, and what it never does |
+| [Setup](setup.md) | The key, the environment, licensing, linking and trading |
+| [Pages](pages.md) | Each page, who opens it and what it is for |
+| [Troubleshooting](troubleshooting.md) | What each state means, and what to do |
+| [Terms](terms.md) | The vendor's terms summarised, your due diligence, the licence |
+
+This file is the repository's own index: it is not uploaded.
+
+**No reference here.** The plugin's roles, settings, pages, tools and storage
+are listed on the Documentation tab's Reference, drawn from the version's own
+declaration, so they always match the version you run.
