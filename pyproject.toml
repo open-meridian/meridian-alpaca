@@ -14,7 +14,6 @@ requires-python = ">=3.11"
 #
 # No third-party dependency: Alpaca's REST is the standard library's, and the
 # New York day is zoneinfo's, on the system's time zone data.
-# PLACEHOLDER (v25): open-meridian 0.29.0 (SDK v25) is not on PyPI yet.
 dependencies = ["open-meridian==0.29.0"]
 
 [project.urls]

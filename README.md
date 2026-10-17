@@ -23,8 +23,8 @@ pass the same suites of the SDK, unchanged.
 **Status:** 0.10.0, on open-meridian 0.29.0 (contract 25): its whole
 declaration, and its documentation in [docs/](docs/), which a deployment
 shows on its Documentation tab; the daily dataset names the US equity
-calendar (contract 24's `calendar_id`). Not released; its pins to the SDK,
-the CLI and core v25 are marked placeholders until published.
+calendar (contract 24's `calendar_id`). Not released; its pins are the
+released SDK, CLI and core v25 (abf028f), by tag and digest.
 
 ## What it serves
 
